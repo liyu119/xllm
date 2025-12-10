@@ -52,6 +52,14 @@ AttentionMetadata AttentionMetadata::build(
     attn_metadata.kv_seq_lens_host = params.kv_seq_lens.to(torch::kCPU);
   }
 
+  // for npu
+  if (attn_mask.has_value()) {
+    attn_metadata.attn_mask = attn_mask.value();
+    // FIXME: The .to(kCPU) operation breaks ACL graph execution. The attention
+    // operator needs to be updated to handle this.
+    attn_metadata.seq_lens = params.kv_seq_lens.to(torch::kCPU);
+  }
+
   attn_metadata.is_chunked_prefill =
       params.batch_forward_type.is_mixed() ||
       params.batch_forward_type.is_chunked_prefill();

@@ -30,6 +30,7 @@ limitations under the License.
 #include "framework/quant_args.h"
 #include "framework/state_dict/state_dict.h"
 #include "layers/common/rms_norm.h"
+#include "platform_attention.h"
 #include "qwen2_attention.h"
 
 namespace xllm {

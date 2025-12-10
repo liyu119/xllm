@@ -17,7 +17,6 @@ limitations under the License.
 
 #include <torch/torch.h>
 
-#include "attention.h"
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/model_args.h"
 #include "framework/parallel_state/parallel_args.h"
@@ -25,6 +24,7 @@ limitations under the License.
 #include "framework/state_dict/state_dict.h"
 #include "layers/common/rms_norm.h"
 #include "linear.h"
+#include "platform_attention.h"
 #include "rotary_embedding.h"
 
 namespace xllm {

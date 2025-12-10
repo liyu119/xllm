@@ -16,6 +16,7 @@ limitations under the License.
 #include "activation.h"
 
 #include "kernels/ops_api.h"
+#include "platform/device.h"
 namespace xllm {
 namespace layer {
 
@@ -29,9 +30,9 @@ void ActivationImpl::forward(torch::Tensor& input, torch::Tensor& output) {
   activation_params.act_mode = act_mode_;
   activation_params.is_gated = is_gated_;
   xllm::kernel::active(activation_params);
-  // Unified assignment: NPU returns new tensor, others modify in-place (no-op
-  // assignment)
-  output = activation_params.output;
+  if (Device::type_str() == "npu") {
+    output = activation_params.output;
+  }
 }
 
 }  // namespace layer

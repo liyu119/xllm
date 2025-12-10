@@ -60,11 +60,10 @@ struct AttentionMetadata {
   torch::Tensor paged_kv_indptr;
   torch::Tensor paged_kv_indices;
   torch::Tensor paged_kv_last_page_len;
-  std::shared_ptr<PlanInfo> plan_info;
 
   // for npu
   torch::Tensor attn_mask;
-  torch::Tensor kv_seq_lens_host;
+  torch::Tensor seq_lens;
 };
 
 }  // namespace layer
