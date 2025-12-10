@@ -49,7 +49,7 @@ class Qwen3NextDecoderImpl : public torch::nn::Module {
 
  private:
   Qwen3NextAttention attention_{nullptr};
-  Qwen3NextGatedDeltaNet linear_attention_{nullptr}
+  Qwen3NextGatedDeltaNet linear_attention_{nullptr};
 
   DenseMLP mlp_{nullptr};
   FusedMoE moe_mlp_{nullptr};
@@ -57,7 +57,6 @@ class Qwen3NextDecoderImpl : public torch::nn::Module {
   RmsNorm input_norm_{nullptr};
   RmsNorm post_norm_{nullptr};
 };
-TORCH_MODULE(Qwen3NextDecoder);
 
 }  // namespace layer
 }  // namespace xllm
