@@ -160,11 +160,11 @@ class Qwen3NextModelImpl : public torch::nn::Module {
   int32_t num_speculative_tokens_ = 0;
   at::Device device_;
   torch::Dtype dtype_;
-  std::vector<layer::WordEmbedding> embed_tokens_;
+  std::vector<layer::NpuWordEmbedding> npu_embed_tokens_;
   layer::RmsNorm norm_{nullptr};
 
-#if defined(USE_NPU) && !defined(USE_NPU_TORCH)
-  std::vector<layer::NpuWordEmbedding> npu_embed_tokens_;
+#if defined(USE_NPU) && defined(USE_NPU_TORCH)
+  std::vector<layer::WordEmbedding> embed_tokens_;
 #endif
 };
 
@@ -220,8 +220,8 @@ class Qwen3NextForCausalLMImpl : public torch::nn::Module {
       lm_head_->load_state_dict(state_dict->get_dict_with_prefix("lm_head."));
 #else
       npu_lm_head_->load_state_dict(state_dict->get_dict_with_prefix("lm_head."));
-    }
 #endif
+    }
 
 #if defined(USE_NPU) && !defined(USE_NPU_TORCH)
     // verify
@@ -230,6 +230,7 @@ class Qwen3NextForCausalLMImpl : public torch::nn::Module {
 
     model_->merge_loaded_weights();
     npu_lm_head_->merge_loaded_weights();
+#endif
   }
 
   virtual void prepare_expert_weight(int32_t layer_id,
@@ -251,15 +252,13 @@ class Qwen3NextForCausalLMImpl : public torch::nn::Module {
       std::vector<layer::NpuWordEmbedding>& word_embedding) {
     model_->set_word_embedding(word_embedding);
   }
-
- private:
-  layer::NpuLmHead npu_lm_head_{nullptr};
-
 #endif
 
  private:
+  layer::NpuLmHead npu_lm_head_{nullptr};
   layer::LmHead lm_head_{nullptr};
   Qwen3NextModel model_{nullptr};
+
 };
 TORCH_MODULE(Qwen3NextForCausalLM);
 
