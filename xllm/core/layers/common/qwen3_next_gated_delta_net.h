@@ -24,7 +24,7 @@ limitations under the License.
 #include "framework/quant_args.h"
 #include "framework/state_dict/state_dict.h"
 #include "layers/linear.h"
-#include "layers/rms_norm_gated.h"
+#include "rms_norm_gated.h"
 
 namespace xllm {
 namespace layer {
@@ -44,6 +44,12 @@ class Qwen3NextGatedDeltaNetImpl : public torch::nn::Module {
   void load_state_dict(const StateDict& state_dict);
 
  private:
+  std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> 
+  process_qkvz_tensor(const torch::Tensor& qkvz);
+  
+  std::tuple<torch::Tensor, torch::Tensor> 
+  process_ba_tensor(const torch::Tensor& ba);
+
   int64_t num_k_heads_;
   int64_t num_v_heads_;
   int64_t num_kv_head_replicas_;
@@ -51,6 +57,7 @@ class Qwen3NextGatedDeltaNetImpl : public torch::nn::Module {
   int64_t head_v_dim_;
   int64_t k_size_;
   int64_t v_size_;
+  int64_t tp_size_;  // 添加tp_size成员变量
   torch::Tensor dt_bias_;
   torch::Tensor a_log_;
 

@@ -15,6 +15,7 @@ limitations under the License.
 #include <glog/logging.h>
 
 #include <tuple>
+#include <unordered_map>
 
 namespace xllm {
 namespace layer {
@@ -23,9 +24,9 @@ Qwen3NextGatedDeltaNetImpl::Qwen3NextGatedDeltaNetImpl(const ModelArgs& args,
                                        const QuantArgs& quant_args,
                                        const ParallelArgs& parallel_args,
                                        const torch::TensorOptions& options) {
-  const int64_t tp_size = parallel_args.tp_group_->world_size();
   const int64_t total_num_heads = args.n_heads();
   const int64_t total_num_kv_heads = args.n_kv_heads().value_or(args.n_heads());
+  tp_size_ = parallel_args.tp_group_->world_size();  
   num_k_heads_ = args.linear_num_key_heads();
   num_v_heads_ = args.linear_num_value_heads();
   head_k_dim_ = args.linear_key_head_dim();
@@ -58,7 +59,7 @@ Qwen3NextGatedDeltaNetImpl::Qwen3NextGatedDeltaNetImpl(const ModelArgs& args,
   // 2. Output projection
   ba_proj_ = register_module("in_proj_ba",
                               ColumnParallelLinear(args.hidden_size(),
-                                                  num_k_heads_ * 2,
+                                                  num_v_heads_ * 2,
                                                   /*bias=*/has_bias,
                                                   /*gather_output=*/false,
                                                     quant_args,
@@ -85,14 +86,93 @@ torch::Tensor Qwen3NextGatedDeltaNetImpl::forward(
     const torch::Tensor& hidden_states,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache) {
-  // Implementation needed
-  return torch::Tensor();
+  // 1. qkvz projection
+  auto qkvz = qkvz_proj_->forward(hidden_states);
+  auto [q, k, v, z] = process_qkvz_tensor(qkvz);
+
+  // 2. ba projection
+  auto ba = ba_proj_->forward(hidden_states);
+  auto [b, a] = process_ba_tensor(ba);
+
+  auto rearrange_merge = [](const torch::Tensor& t) {
+    TORCH_CHECK(t.dim() >= 2, "Tensor must have at least 2 dims!");
+    std::vector<int64_t> new_shape(t.sizes().slice(0, -2).begin(), t.sizes().slice(0, -2).end());
+    new_shape.push_back(t.size(-2) * t.size(-1));
+    return t.reshape(new_shape);
+  };
+
+  q = rearrange_merge(q);
+  k = rearrange_merge(k);
+  v = rearrange_merge(v);
+  torch::Tensor mixed_qkv = torch::cat({q, k, v}, -1);
+
+  // 3. core attention
+
+  // 4. output projection
+  auto attn_output = o_proj_->forward(rearrange_merge(z));
+  return attn_output; 
+}
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> 
+Qwen3NextGatedDeltaNetImpl::process_qkvz_tensor(const torch::Tensor& qkvz) {
+  std::vector<int64_t> new_tensor_shape_qkvz = [&]() {
+    std::vector<int64_t> dims(
+      qkvz.sizes().slice(0, -1).begin(), 
+      qkvz.sizes().slice(0, -1).end());
+    dims.push_back(num_k_heads_ / tp_size_);
+    dims.push_back(head_k_dim_ + head_k_dim_ + (head_v_dim_ + head_v_dim_) * num_v_heads_ / num_k_heads_);
+    return dims;
+  };
+  
+  auto reshaped_qkvz = qkvz.view(new_tensor_shape_qkvz);
+  
+  auto qkvz_split = torch::split(reshaped_qkvz, 
+    {head_k_dim_, head_k_dim_, 
+     num_v_heads_ * head_v_dim_ / num_k_heads_, 
+     head_v_dim_ * num_v_heads_ / num_k_heads_}, 2);
+     
+  auto q = qkvz_split[0].contiguous();
+  auto k = qkvz_split[1].contiguous();
+  auto v = qkvz_split[2].contiguous();
+  auto z = qkvz_split[3].contiguous();
+
+  v = v.view({z.size(0), -1, head_v_dim_});
+  z = z.view({z.size(0), -1, head_v_dim_});
+
+  return std::make_tuple(q, k, v, z);
+}
+
+
+std::tuple<torch::Tensor, torch::Tensor> 
+Qwen3NextGatedDeltaNetImpl::process_ba_tensor(const torch::Tensor& ba) {
+  std::vector<int64_t> new_tensor_shape_ba = [&]() {
+    std::vector<int64_t> dims(
+      ba.sizes().slice(0, -1).begin(), 
+      ba.sizes().slice(0, -1).end());
+    dims.push_back(2 * num_v_heads_ / num_k_heads_);
+    return dims;
+  };
+  
+  auto reshaped_ba = ba.view(new_tensor_shape_ba);
+  auto ba_split = torch::split(reshaped_ba, 
+    {num_v_heads_ / num_k_heads_, num_v_heads_ / num_k_heads_}, 2);
+     
+  auto b = ba_split[0].contiguous();
+  auto a = ba_split[1].contiguous();
+
+  b = b.reshape({b.size(0), num_k_heads_ / tp_size_});
+  a = a.reshape({a.size(0), num_k_heads_ / tp_size_});
+  
+  return std::make_tuple(b, a);
 }
 
 void Qwen3NextGatedDeltaNetImpl::load_state_dict(const StateDict& state_dict) {
   qkvz_proj_->load_state_dict(state_dict.get_dict_with_prefix("in_proj_qkvz."));
   ba_proj_->load_state_dict(state_dict.get_dict_with_prefix("in_proj_ba."));
-  conv1d_->load_state_dict(state_dict.get_dict_with_prefix("conv1d."));
+  
+  if (auto w = state_dict.get_tensor("conv1d.weight"); w.defined()) {
+    conv1d_->load_state_dict(StateDict({{"weight", w.squeeze(1)}}));
+  }
   o_proj_->load_state_dict(state_dict.get_dict_with_prefix("out_proj."));
   if (auto w = state_dict.get_tensor("norm.weight"); w.defined()) {
     norm_->load_state_dict(StateDict({{"weight", w}}));
