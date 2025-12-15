@@ -33,19 +33,25 @@ Qwen3NextAttentionImpl::Qwen3NextAttentionImpl(const ModelArgs& args,
   CHECK(total_num_heads % tp_size == 0);
   num_heads_ = total_num_heads / tp_size;
 
-  CHECK(total_num_kv_heads % tp_size == 0);
-  num_kv_heads_ = total_num_kv_heads / tp_size;
-  num_kv_head_replicas_ = num_heads_ / num_kv_heads_;
+  if (total_num_kv_heads >= tp_size) {
+    CHECK(total_num_kv_heads % tp_size == 0);
+    num_kv_heads_ = total_num_kv_heads / tp_size;
+    num_kv_head_replicas_ = 1;
+  } else {
+    CHECK(tp_size % total_num_kv_heads == 0);
+    num_kv_heads_ = 1;
+    num_kv_head_replicas_ = tp_size / total_num_kv_heads;
+  }
 
   head_dim_ = args.head_dim();
   q_size_ = num_heads_ * head_dim_;
   kv_size_ = num_kv_heads_ * head_dim_;
   scaling_ = 1.0f / std::sqrt(static_cast<float>(head_dim_));
-
+  attn_output_gate_ = args.attn_output_gate();
   // 1. QKV linear
   qkv_proj_ = register_module("qkv_proj",
                               QKVParallelLinear(args.hidden_size(),
-                                                args.attn_output_gate ? num_heads_ * 2 : num_heads_,  
+                                                attn_output_gate_ ? num_heads_ * 2 : num_heads_,  
                                                 num_kv_heads_,
                                                 args.head_dim(),
                                                 num_kv_head_replicas_,
@@ -56,7 +62,7 @@ Qwen3NextAttentionImpl::Qwen3NextAttentionImpl(const ModelArgs& args,
 
   // 2. O proj
   o_proj_ = register_module("o_proj",
-                            RowParallelLinear(q_size_,
+                            RowParallelLinear(total_num_heads * head_dim_,
                                               args.hidden_size(),
                                               /*bias=*/args.attention_bias(),
                                               /*input_is_parallelized=*/true,
@@ -76,7 +82,7 @@ Qwen3NextAttentionImpl::Qwen3NextAttentionImpl(const ModelArgs& args,
   // 5. Rotary embedding
   rotary_emb_ = register_module(
       "rotary_emb",
-      RotaryEmbedding(head_dim_,
+      RotaryEmbedding(128,
                       args.max_position_embeddings(),
                       args.rope_theta(),
                       /*interleaved=*/false,
@@ -99,22 +105,43 @@ torch::Tensor Qwen3NextAttentionImpl::forward(
   // 1. qkv projection
   auto qkv = qkv_proj_->forward(hidden_states);
 
-  // Get model args to check attn_output_gate
-  // Since we don't have direct access to model args here, we'll infer from tensor shapes
-  bool attn_output_gate = args.attn_output_gate;
   
   torch::Tensor q, k, v;
-  torch::Tensor gate_part; // Declare gate_part outside the conditional block
+  torch::Tensor gate; // Declare gate_part outside the conditional block
   
-  if (attn_output_gate) {
+  if (attn_output_gate_) {
     // Split qkv for attn_output_gate case: [q_size*2, kv_size, kv_size]
     auto q_gate = qkv.slice(/*dim=*/-1, 0, q_size_ * 2);
     k = qkv.slice(/*dim=*/-1, q_size_ * 2, q_size_ * 2 + kv_size_);
     v = qkv.slice(/*dim=*/-1, q_size_ * 2 + kv_size_, q_size_ * 2 + kv_size_ * 2);
     
-    // Split q_gate into q and gate
-    q = q_gate.slice(/*dim=*/-1, 0, q_size_);
-    gate_part = q_gate.slice(/*dim=*/-1, q_size_, q_size_ * 2);
+    std::vector<int64_t> orig_shape;
+    int64_t q_gate_dim = q_gate.dim();
+    orig_shape = std::vector<int64_t>(
+        q_gate.sizes().slice(0, q_gate_dim - 1).begin(),
+        q_gate.sizes().slice(0, q_gate_dim - 1).end()
+    );
+
+    std::vector<int64_t> new_shape = orig_shape;
+    new_shape.push_back(num_heads_); // 对应 self.num_heads
+    int64_t orig_total = 1;
+    for (auto d : orig_shape) orig_total *= d;
+    int64_t last_dim = q_gate.numel() / (orig_total * num_heads_);
+    new_shape.push_back(last_dim);
+
+    torch::Tensor q_gate_reshaped = q_gate.reshape(new_shape);
+
+    auto chunks = torch::chunk(q_gate_reshaped, 2, /*dim=*/-1);
+    q = chunks[0];
+    gate = chunks[1];
+
+    std::vector<int64_t> q_new_shape = orig_shape;
+    q_new_shape.push_back(q.numel() / orig_total); // 计算 -1 对应的实际值
+    q = q.reshape(q_new_shape);
+
+    std::vector<int64_t> gate_new_shape = orig_shape;
+    gate_new_shape.push_back(gate.numel() / orig_total);
+    gate = gate.reshape(gate_new_shape);
   } else {
     // Normal case: [q_size, kv_size, kv_size]
     q = qkv.slice(/*dim=*/-1, 0, q_size_);
@@ -144,17 +171,8 @@ torch::Tensor Qwen3NextAttentionImpl::forward(
   auto out = std::get<0>(attn_->forward(attn_metadata, q, k, v, kv_cache));
   
   // 6. Apply attn_output_gate if enabled
-  if (attn_output_gate) {
-    // Reshape gate to match out dimensions
-    auto gate_shape = gate_part.sizes().vec();
-    gate_shape.pop_back();
-    gate_shape.pop_back();
-    gate_shape.push_back(-1);
-    
-    auto gate = gate_part.view(gate_shape);
-    // Apply sigmoid activation to gate
+  if (attn_output_gate_) {
     gate = torch::sigmoid(gate);
-    // Apply gating to attention output
     out = out * gate;
   }
 
