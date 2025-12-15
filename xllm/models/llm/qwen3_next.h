@@ -117,8 +117,35 @@ class Qwen3NextModelImpl : public torch::nn::Module {
     }
 
 #if defined(USE_NPU) && defined(USE_NPU_TORCH)
+    // Create attention mask
+    torch::Tensor attn_mask;
+    max_seq_len_ = FLAGS_enable_chunked_prefill 
+        ? std::max(input_params.kv_max_seq_len, max_seq_len_) 
+        : 128;
+    
+    if (FLAGS_enable_chunked_prefill) {
+      int num_sequences = input_params.num_sequences;
+      if (num_sequences > 0) {
+        std::vector<torch::Tensor> req_mask_vec;
+        req_mask_vec.reserve(num_sequences);
+
+        for (int j = 0; j < num_sequences; j++) {
+          auto mask = attn_mask_.gen_append_mask(
+              input_params.q_seq_lens_vec[j],
+              input_params.kv_seq_lens_vec[j],
+              max_seq_len_,
+              dtype_,
+              device_);
+          req_mask_vec.emplace_back(mask);
+        }
+        attn_mask = torch::cat(req_mask_vec, 0);
+      }
+    } else {
+      attn_mask = attn_mask_.get_attn_mask(max_seq_len_, dtype_, device_);
+    }
+
     layer::AttentionMetadata attn_metadata =
-        layer::AttentionMetadata::build(input_params, input_params.q_max_seq_len > 1);
+        layer::AttentionMetadata::build(input_params, input_params.q_max_seq_len > 1, attn_mask);
     torch::Tensor h = embed_tokens_[0](tokens);
     for (size_t i = 0; i < layers_.size(); i++) {
       auto& layer = layers_[i];
@@ -162,6 +189,7 @@ class Qwen3NextModelImpl : public torch::nn::Module {
   torch::Dtype dtype_;
   std::vector<layer::NpuWordEmbedding> npu_embed_tokens_;
   layer::RmsNorm norm_{nullptr};
+  layer::AttentionMask attn_mask_;
 
 #if defined(USE_NPU) && defined(USE_NPU_TORCH)
   std::vector<layer::WordEmbedding> embed_tokens_;
@@ -240,6 +268,7 @@ class Qwen3NextForCausalLMImpl : public torch::nn::Module {
   virtual void update_expert_weight(int32_t layer_id) { return; }
 
 #if defined(USE_NPU)
+
   layer::NpuLmHead get_lm_head() { return npu_lm_head_; }
 
   void set_lm_head(layer::NpuLmHead& head) { npu_lm_head_ = head; }
@@ -297,8 +326,9 @@ REGISTER_MODEL_ARGS(qwen3_next, [&] {
   LOAD_ARG_OR(tie_word_embeddings, "tie_word_embeddings", false);
   LOAD_ARG_OR(vocab_size, "vocab_size", 151936);
   LOAD_ARG_OR(mlp_only_layers, "mlp_only_layers", std::vector<int>());
-  LOAD_ARG_OR(attn_output_gate, "attn_output_gate", true);
+
   // Additional parameters for Qwen3-Next architecture
+  LOAD_ARG_OR(attn_output_gate, "attn_output_gate", true);
   LOAD_ARG_OR(full_attention_interval, "full_attention_interval", 4);
   LOAD_ARG_OR(linear_conv_kernel_dim, "linear_conv_kernel_dim", 4);
   LOAD_ARG_OR(linear_key_head_dim, "linear_key_head_dim", 128);
