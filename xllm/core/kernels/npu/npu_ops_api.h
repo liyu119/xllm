@@ -19,6 +19,7 @@ limitations under the License.
 #include <optional>
 
 #include "./custom_functions_npu/AtbCommon.h"
+#include "./torch_api/triton_ops_api.h"
 
 namespace xllm::kernel::npu {
 

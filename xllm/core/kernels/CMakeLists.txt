@@ -23,6 +23,7 @@ cc_library(
   DEPS
     torch
     $<$<BOOL:${USE_NPU}>:npu_kernels>
+    $<$<BOOL:${USE_NPU}>:triton_adapter>
     $<$<BOOL:${USE_MLU}>:mlu_kernels>
     $<$<BOOL:${USE_CUDA}>:cuda_kernels>
 )

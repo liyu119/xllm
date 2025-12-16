@@ -13,6 +13,8 @@ cc_library(
     qwen2_decoder_layer.h
     qwen2_5_vision_layer.h
     qwen3_moe_decoder_layer.h
+    qwen3_next_decoder_layer.h
+    qwen3_next_gated_delta_net.h
     linear.h
     word_embedding_impl.h
     layer_utils.h
@@ -27,6 +29,8 @@ cc_library(
     qwen2_decoder_layer.cpp
     qwen2_5_vision_layer.cpp
     qwen3_moe_decoder_layer.cpp
+    qwen3_next_decoder_layer.cpp
+    qwen3_next_gated_delta_net.cpp
     linear.cpp
     word_embedding_impl.cpp
     layer_utils.cpp
