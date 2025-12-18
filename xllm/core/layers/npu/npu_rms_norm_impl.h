@@ -47,7 +47,7 @@ class NpuRMSNormImpl : public BaseLayer {
  public:
   explicit NpuRMSNormImpl(const ModelContext& context);
 
-  ~NpuRMSNormImpl() override = default;
+  ~NpuRMSNormImpl() {};
 
   // void load_state_dict(const StateDict& state_dict) override;
 

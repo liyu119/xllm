@@ -47,7 +47,7 @@ class NpuQwen2VisionEncoderLayerImpl : public BaseLayer {
  public:
   explicit NpuQwen2VisionEncoderLayerImpl(const ModelContext& context);
 
-  ~NpuQwen2VisionEncoderLayerImpl() override = default;
+  ~NpuQwen2VisionEncoderLayerImpl() {};
 
   // void load_state_dict(const StateDict& state_dict) override;
 

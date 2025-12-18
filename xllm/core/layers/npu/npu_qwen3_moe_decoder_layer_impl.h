@@ -42,7 +42,7 @@ class NpuQwen3MoeDecoderLayerImpl : public BaseLayer {
   explicit NpuQwen3MoeDecoderLayerImpl(const ModelContext& context,
                                        const int32_t layer_id);
 
-  ~NpuQwen3MoeDecoderLayerImpl() override = default;
+  ~NpuQwen3MoeDecoderLayerImpl() {};
 
   virtual void merge_loaded_weights();
 

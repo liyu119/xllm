@@ -74,11 +74,12 @@ class MMEmbeddingVLMImpl : public MMEmbeddingVLM {
   virtual void set_npu_word_embedding(layer::NpuWordEmbedding& embedding) {
     return;
   }
-#endif
+#else
   virtual void set_lm_head(layer::LmHead& head) { return; }
   virtual layer::LmHead get_lm_head() { return nullptr; }
   virtual layer::WordEmbedding get_word_embedding() { return nullptr; }
   virtual void set_word_embedding(layer::WordEmbedding& embedding) { return; }
+#endif
 
   void load_model(std::unique_ptr<ModelLoader> loader) override {
     model_->load_model(std::move(loader));

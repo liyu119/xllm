@@ -50,7 +50,7 @@ class NpuColumnParallelLinearImpl : public BaseLayer {
  public:
   NpuColumnParallelLinearImpl(const ModelContext& context);
 
-  ~NpuColumnParallelLinearImpl() override = default;
+  ~NpuColumnParallelLinearImpl() {};
 
   virtual void merge_loaded_weights() override;
 

@@ -48,7 +48,7 @@ class NpuRotaryEmbeddingImpl : public BaseLayer {
  public:
   explicit NpuRotaryEmbeddingImpl(const ModelContext& context);
 
-  ~NpuRotaryEmbeddingImpl() override = default;
+  ~NpuRotaryEmbeddingImpl() {};
 
   torch::Tensor forward(const torch::Tensor& cos_sin_pos,
                         const torch::Tensor& position,

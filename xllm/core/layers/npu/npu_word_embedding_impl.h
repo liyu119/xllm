@@ -45,7 +45,7 @@ class NpuWordEmbeddingImpl : public BaseLayer {
  public:
   explicit NpuWordEmbeddingImpl(const ModelContext& context);
 
-  ~NpuWordEmbeddingImpl() override = default;
+  ~NpuWordEmbeddingImpl() {};
 
   void merge_loaded_weights() override;
 

@@ -344,6 +344,7 @@ torch::Tensor NpuGlm4MoeDecoderImpl::forward(
     torch::Tensor& attn_mask,
     KVCache& kv_cache,
     const ModelInputParams& input_params,
+    torch::Tensor& expert_array,
     aclrtEvent* event,
     std::atomic<bool>* event_flag,
     int node_id) {

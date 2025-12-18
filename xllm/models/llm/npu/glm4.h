@@ -24,9 +24,8 @@ namespace xllm {
 class Glm4DecoderLayerImpl
     : public LlmDecoderLayerImplBase<layer::NpuGlm4DecoderLayer> {
  public:
-  Glm4DecoderLayerImpl(const ModelContext& context, const int32_t layer_id)
-      : LlmDecoderLayerImplBase<layer::NpuGlm4DecoderLayer>(context, layer_id) {
-  }
+  Glm4DecoderLayerImpl(const ModelContext& context)
+      : LlmDecoderLayerImplBase<layer::NpuGlm4DecoderLayer>(context) {}
 };
 TORCH_MODULE(Glm4DecoderLayer);
 

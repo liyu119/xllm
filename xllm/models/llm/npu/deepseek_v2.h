@@ -15,13 +15,25 @@ limitations under the License.
 
 #pragma once
 
+#include <gflags/gflags.h>
+#include <torch/torch.h>
+
+#include <boost/algorithm/string.hpp>
+#include <string>
+#include <vector>
+
+#include "core/common/global_flags.h"
+#include "core/framework/kv_cache/kv_cache.h"
+#include "core/framework/model/model_input_params.h"
+#include "core/framework/model/npu_dp_ep_padding.h"
+#include "core/framework/model_context.h"
+#include "core/layers/common/attention_mask.h"
 #include "core/layers/npu/npu_deepseek_v2_decoder_layer_impl.h"
 #include "core/layers/npu/npu_lm_head_impl.h"
 #include "core/layers/npu/npu_pos_embedding_impl.h"
 #include "core/layers/npu/npu_rms_norm_impl.h"
 #include "core/layers/npu/npu_word_embedding_impl.h"
 #include "core/layers/npu/rotary_embedding.h"
-#include "llm_model_base.h"
 #include "models/model_registry.h"
 // DeepSeek v2 compatible with huggingface weights
 // ref to:
@@ -97,22 +109,11 @@ class DeepseekV2ModelImpl : public torch::nn::Module {
     npu_embed_tokens_ =
         register_module("npu_embed_tokens", layer::NpuWordEmbedding(context));
 
+    pos_emb_ = create_rotary_embedding(model_args,
+                                       model_args.rotary_dim(),
+                                       /*interleaved=*/false,
+                                       options);
     atb_pos_emb_ = layer::NpuPosEmbedding(context);
-    cos_sin_ = layer::rotary::get_deepseek_rotary_embedding(
-        model_args.qk_rope_head_dim(),
-        model_args.qk_rope_head_dim(),
-        model_args.max_position_embeddings(),
-        model_args.rope_scaling_original_max_position_embeddings(),
-        model_args.rope_theta(),
-        /*interleaved*/ false,
-        model_args.rope_scaling_factor(),
-        model_args.rope_extrapolation_factor(),
-        model_args.rope_scaling_attn_factor(),
-        model_args.rope_scaling_beta_fast(),
-        model_args.rope_scaling_beta_slow(),
-        model_args.rope_scaling_mscale(),
-        model_args.rope_scaling_mscale_all_dim(),
-        options);
 
     max_seq_len_ = model_args.max_position_embeddings();
     int32_t mask_value = model_args.dtype() == "bfloat16" ? 1 : -9984;
@@ -127,7 +128,7 @@ class DeepseekV2ModelImpl : public torch::nn::Module {
     }
 
     norm_ = register_module("norm", layer::NpuRMSNorm(context));
-
+    // dp_size_=4;
     dp_size_ = parallel_args.dp_size();
     dp_local_tp_size_ = parallel_args.world_size() / dp_size_;
     dp_rank_ = parallel_args.rank() / dp_local_tp_size_;
@@ -147,7 +148,7 @@ class DeepseekV2ModelImpl : public torch::nn::Module {
     }
 
     auto h = npu_embed_tokens_(tokens, 0);
-    auto cos_sin = atb_pos_emb_(cos_sin_, positions, 0);
+    auto cos_sin = atb_pos_emb_(pos_emb_->get_cos_sin_cache(), positions, 0);
     auto cos_sin_chunks = cos_sin.chunk(/*chunks=*/2, /*dim=*/-1);
     auto cos_pos = cos_sin_chunks[0].contiguous();
     auto sin_pos = cos_sin_chunks[1].contiguous();
@@ -245,7 +246,7 @@ class DeepseekV2ModelImpl : public torch::nn::Module {
   at::Device device_;
   torch::Dtype dtype_;
   layer::NpuWordEmbedding npu_embed_tokens_{nullptr};
-  torch::Tensor cos_sin_;
+  std::shared_ptr<NpuRotaryEmbedding> pos_emb_{nullptr};
   layer::NpuPosEmbedding atb_pos_emb_{nullptr};
   layer::AttentionMask attn_mask_;
   layer::NpuRMSNorm norm_{nullptr};
@@ -255,10 +256,44 @@ TORCH_MODULE(DeepseekV2Model);
 class DeepseekV2ForCausalLMImpl
     : public LlmForCausalLMImplBase<DeepseekV2Model> {
  public:
-  DeepseekV2ForCausalLMImpl(const ModelContext& context)
-      : LlmForCausalLMImplBase<DeepseekV2Model>(context),
-        first_k_dense_replace_(
-            context.get_model_args().first_k_dense_replace()) {}
+  DeepseekV2ForCausalLMImpl(const ModelContext& context) {
+    model_ = register_module("model", DeepseekV2Model(context));
+    npu_lm_head_ = register_module("lm_head", layer::NpuLmHead(context));
+    first_k_dense_replace_ = context.get_model_args().first_k_dense_replace();
+  }
+
+  // tokens: [num_tokens]
+  // positions: [num_tokens] token pos in the sequence
+  // returns: [num_tokens, hidden_size]
+  torch::Tensor forward(const torch::Tensor& tokens,
+                        const torch::Tensor& positions,
+                        std::vector<KVCache>& kv_caches,
+                        const ModelInputParams& input_params) {
+    return model_(tokens, positions, kv_caches, input_params);
+  }
+
+  // hidden_states: [num_tokens, hidden_size]
+  // seleted_idxes: [num_tokens]
+  // returns: [num_tokens, vocab_size]
+  torch::Tensor logits(const torch::Tensor& hidden_states,
+                       const torch::Tensor& seleted_idxes) {
+    return npu_lm_head_(hidden_states, seleted_idxes, 0);
+  }
+
+  void load_model(std::unique_ptr<ModelLoader> loader) {
+    for (const auto& state_dict : loader->get_state_dicts()) {
+      model_->load_state_dict(state_dict->get_dict_with_prefix("model."));
+      npu_lm_head_->load_state_dict(
+          state_dict->get_dict_with_prefix("lm_head."));
+    }
+
+    // verify
+    model_->verify_loaded_weights("model.");
+    npu_lm_head_->verify_loaded_weights("lm_head.");
+
+    model_->merge_loaded_weights();
+    npu_lm_head_->merge_loaded_weights();
+  }
 
   void prepare_expert_weight(int32_t layer_id,
                              const std::vector<int32_t>& expert_ids) override {
@@ -270,7 +305,21 @@ class DeepseekV2ForCausalLMImpl
     model_->update_expert_weight(layer_id + first_k_dense_replace_);
   }
 
+  layer::NpuLmHead get_npu_lm_head() { return npu_lm_head_; }
+
+  void set_npu_lm_head(layer::NpuLmHead& head) { npu_lm_head_ = head; }
+
+  layer::NpuWordEmbedding get_npu_word_embedding() {
+    return model_->get_npu_word_embedding();
+  }
+
+  void set_npu_word_embedding(layer::NpuWordEmbedding& npu_word_embedding) {
+    model_->set_npu_word_embedding(npu_word_embedding);
+  }
+
  private:
+  DeepseekV2Model model_{nullptr};
+  layer::NpuLmHead npu_lm_head_{nullptr};
   int32_t first_k_dense_replace_;
 };
 TORCH_MODULE(DeepseekV2ForCausalLM);

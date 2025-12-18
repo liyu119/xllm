@@ -28,9 +28,8 @@ namespace xllm {
 class QWen2DecoderLayerImpl
     : public LlmDecoderLayerImplBase<layer::NpuQwen2DecoderLayer> {
  public:
-  QWen2DecoderLayerImpl(const ModelContext& context, const int32_t layer_id)
-      : LlmDecoderLayerImplBase<layer::NpuQwen2DecoderLayer>(context,
-                                                             layer_id) {}
+  QWen2DecoderLayerImpl(const ModelContext& context)
+      : LlmDecoderLayerImplBase<layer::NpuQwen2DecoderLayer>(context) {}
 };
 TORCH_MODULE(QWen2DecoderLayer);
 

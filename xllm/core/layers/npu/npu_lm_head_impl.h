@@ -46,7 +46,7 @@ class NpuLmHeadImpl : public BaseLayer {
  public:
   explicit NpuLmHeadImpl(const ModelContext& context);
 
-  ~NpuLmHeadImpl() override = default;
+  ~NpuLmHeadImpl() {};
 
   void merge_loaded_weights() override;
 

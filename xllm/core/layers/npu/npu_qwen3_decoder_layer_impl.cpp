@@ -97,18 +97,6 @@ void NpuQwen3DecoderLayerImpl::param_from_args(
   }
 }
 
-void NpuQwen3DecoderLayerImpl::initialize_parallel_parameters(
-    atb_speed::qwen::QwenLayerParam& param,
-    const ParallelArgs& parallel_args) {
-  param.mapping = parallel_args.mapping();
-  param.tensorParallelInfo = {parallel_args.rank(),
-                              parallel_args.world_size(),
-                              FLAGS_communication_backend,
-                              FLAGS_rank_tablefile,
-                              nullptr,
-                              ""};
-}
-
 void NpuQwen3DecoderLayerImpl::initialize_quantization_parameters(
     atb_speed::qwen::QwenLayerParam& param) {
   if (quantize_type_.empty()) {

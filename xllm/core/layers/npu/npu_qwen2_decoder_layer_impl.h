@@ -48,7 +48,7 @@ class NpuQwen2DecoderLayerImpl : public BaseLayer {
  public:
   explicit NpuQwen2DecoderLayerImpl(const ModelContext& context);
 
-  ~NpuQwen2DecoderLayerImpl() override = default;
+  ~NpuQwen2DecoderLayerImpl() {};
 
   virtual void merge_loaded_weights() override;
 

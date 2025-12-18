@@ -47,7 +47,7 @@ class NpuQwen2dot5VisionEncoderLayerImpl : public BaseLayer {
  public:
   explicit NpuQwen2dot5VisionEncoderLayerImpl(const ModelContext& context);
 
-  ~NpuQwen2dot5VisionEncoderLayerImpl() override = default;
+  ~NpuQwen2dot5VisionEncoderLayerImpl() {};
 
   void merge_loaded_weights() override;
 

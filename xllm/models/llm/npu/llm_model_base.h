@@ -32,7 +32,6 @@ limitations under the License.
 #include "core/layers/common/attention_mask.h"
 #include "core/layers/npu/npu_block_copy_impl.h"
 #include "core/layers/npu/npu_lm_head_impl.h"
-#include "core/layers/npu/npu_pos_embedding_impl.h"
 #include "core/layers/npu/npu_rms_norm_impl.h"
 #include "core/layers/npu/npu_word_embedding_impl.h"
 #include "models/model_registry.h"
@@ -97,7 +96,6 @@ class LlmDecoderLayerImplBase : public torch::nn::Module {
  private:
   DecoderType decoder_layer_{nullptr};
   layer::NpuBlockCopy block_copy_{nullptr};
-  int32_t layer_id_;
 };
 
 template <typename DecoderLayerType>
@@ -320,6 +318,8 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
   // returns: [num_tokens, vocab_size]
   virtual torch::Tensor logits(const torch::Tensor& hidden_states,
                                const torch::Tensor& seleted_idxes) {
+    // select tokens if provided
+    auto h = hidden_states;
     return npu_lm_head_(hidden_states, seleted_idxes, 0);
   }
 
@@ -339,11 +339,7 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
 
     // verify
     model_->verify_loaded_weights(prefix);
-    if (tie_word_embeddings) {
-      npu_lm_head_->verify_loaded_weights(prefix + "embed_tokens.");
-    } else {
-      npu_lm_head_->verify_loaded_weights("lm_head.");
-    }
+    npu_lm_head_->verify_loaded_weights("lm_head.");
 
     model_->merge_loaded_weights();
     // test
