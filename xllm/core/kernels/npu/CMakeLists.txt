@@ -13,5 +13,6 @@ cc_library(
     rope.h
   DEPS
     :npu_kernels_impl
+    triton_adapter
     # spdlog::spdlog
 )

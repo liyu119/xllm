@@ -382,5 +382,36 @@ void masked_indexer_select_paged_kv(MaskedIndexerSelectPagedKVParams& params) {
   LOG(FATAL) << "masked_indexer_select_paged_kv not implemented";
 #endif
 }
+std::pair<torch::Tensor, torch::Tensor> fused_gdn_gating(FusedGdnGatingParams& params) {
+#if defined(USE_NPU)
+  return npu::npu_fused_gdn_gating(
+      params.A_log, params.a, params.b, params.dt_bias, params.beta, params.threshold);
+#else
+  throw std::runtime_error("npu_fused_gdn_gating not implemented");
+#endif
+}
 
+std::pair<torch::Tensor, torch::Tensor> fused_recurrent_gated_delta_rule(
+    FusedRecurrentGatedDeltaRuleParams& params) {
+#if defined(USE_NPU)
+  return npu::npu_fused_recurrent_gated_delta_rule(
+      params.q, params.k, params.v, params.g, params.beta, params.scale,
+      params.initial_state, params.inplace_final_state, params.cu_seqlens,
+      params.ssm_state_indices, params.num_accepted_tokens, params.use_qk_l2norm_in_kernel);
+#else
+  throw std::runtime_error("fused_recurrent_gated_delta_rule not implemented");
+#endif
+}
+
+torch::Tensor causal_conv1d_update(CausalConv1dUpdateParams& params) {
+#if defined(USE_NPU)
+  return npu::npu_causal_conv1d_update(
+      params.x, params.conv_state, params.weight, params.bias, params.activation,
+      params.conv_state_indices, params.num_accepted_tokens, params.query_start_loc,
+      params.max_query_len, params.pad_slot_id, params.block_idx_last_scheduled_token,
+      params.initial_state_idx, params.validate_data);
+#else
+  throw std::runtime_error("causal_conv1d_update not implemented");
+#endif
+}
 }  // namespace xllm::kernel

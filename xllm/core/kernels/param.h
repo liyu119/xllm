@@ -744,4 +744,47 @@ struct MaskedIndexerSelectPagedKVParams {
   int64_t quant_block_size;
 };
 
+// NPU Fused GDN Gating parameters
+struct FusedGdnGatingParams {
+  torch::Tensor A_log;
+  torch::Tensor a;
+  torch::Tensor b;
+  torch::Tensor dt_bias;
+  float beta = 1.0f;
+  float threshold = 20.0f;
+};
+
+// NPU Fused Recurrent Gated Delta Rule parameters
+struct FusedRecurrentGatedDeltaRuleParams {
+  torch::Tensor q;
+  torch::Tensor k;
+  torch::Tensor v;
+  torch::Tensor g;
+  std::optional<torch::Tensor> beta = std::nullopt;
+  std::optional<float> scale = std::nullopt;
+  std::optional<torch::Tensor> initial_state = std::nullopt;
+  bool inplace_final_state = true;
+  std::optional<torch::Tensor> cu_seqlens = std::nullopt;
+  std::optional<torch::Tensor> ssm_state_indices = std::nullopt;
+  std::optional<torch::Tensor> num_accepted_tokens = std::nullopt;
+  bool use_qk_l2norm_in_kernel = false;
+};
+
+// NPU Causal Conv1d Update parameters
+struct CausalConv1dUpdateParams {
+  torch::Tensor x;
+  torch::Tensor conv_state;
+  torch::Tensor weight;
+  torch::Tensor bias;
+  bool activation = true;
+  std::optional<torch::Tensor> conv_state_indices = std::nullopt;
+  std::optional<torch::Tensor> num_accepted_tokens = std::nullopt;
+  std::optional<torch::Tensor> query_start_loc = std::nullopt;
+  int32_t max_query_len = -1;
+  int32_t pad_slot_id = -1;
+  std::optional<torch::Tensor> block_idx_last_scheduled_token = std::nullopt;
+  std::optional<torch::Tensor> initial_state_idx = std::nullopt;
+  bool validate_data = false;
+};
+
 }  // namespace xllm::kernel
