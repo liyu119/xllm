@@ -777,12 +777,12 @@ struct CausalConv1dUpdateParams {
   torch::Tensor weight;
   torch::Tensor bias;
   bool activation = true;
-  std::optional<torch::Tensor> conv_seqlens = std::nullopt;
-  std::optional<torch::Tensor> conv_state_indices = std::nullopt;
-  std::optional<torch::Tensor> num_accepted_tokens = std::nullopt;
-  std::optional<torch::Tensor> query_start_loc = std::nullopt;
+  const std::optional<torch::Tensor> conv_seqlens = std::nullopt;
+  const std::optional<torch::Tensor> conv_state_indices = std::nullopt;
+  const std::optional<torch::Tensor> num_accepted_tokens = std::nullopt;
+  const std::optional<torch::Tensor> query_start_loc = std::nullopt;
   int32_t max_query_len = -1;
-  const std::optional<torch::Tensor>& intermediate_conv_window = std::nullopt;
+  std::optional<torch::Tensor>& intermediate_conv_window = std::nullopt;
   int32_t pad_slot_id = -1;
   bool validate_data = false;
 };
