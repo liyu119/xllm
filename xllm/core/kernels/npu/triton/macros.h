@@ -32,33 +32,33 @@
 #define _DECLARE_ARG_VALUE(type, name) , name
 
 #define REG_KERNEL_ARGS(kernel_name, ARG_LIST_MACRO)     \
-  struct __attribute__((packed)) _##kernel_name##_Args { \
-    void* ffts_addr __attribute__((aligned(8)));         \
-    void* sync_block_lock __attribute__((aligned(8)));     \
-    void* workspace_addr __attribute__((aligned(8)));    \
-    ARG_LIST_MACRO(_DECLARE_STRUCT_FIELD)                \
-    int32_t gridX __attribute__((aligned(4)));           \
-    int32_t gridY __attribute__((aligned(4)));           \
-    int32_t gridZ __attribute__((aligned(4)));           \
-  };
+    struct __attribute__((packed)) _##kernel_name##_Args { \
+      void* ffts_addr __attribute__((aligned(8)));         \
+      void* sync_block_lock __attribute__((aligned(8)));     \
+      void* workspace_addr __attribute__((aligned(8)));    \
+      ARG_LIST_MACRO(_DECLARE_STRUCT_FIELD)                \
+      int32_t gridX __attribute__((aligned(4)));           \
+      int32_t gridY __attribute__((aligned(4)));           \
+      int32_t gridZ __attribute__((aligned(4)));           \
+    };
 
 #define REG_KERNEL_LAUNCHER(kernel_name, ARG_LIST_MACRO)                       \
-  static rtError_t kernel_name(                                                \
-      rtStream_t stream,                                                       \
-      int32_t gridX,                                                           \
-      int32_t gridY,                                                           \
-      int32_t gridZ,                                                           \
-      void* workspace_addr,                                                    \
-      void* sync_block_lock ARG_LIST_MACRO(_DECLARE_PARAM)) {                    \
+static rtError_t kernel_name(                                                \
+    rtStream_t stream,                                                       \
+    int32_t gridX,                                                           \
+    int32_t gridY,                                                           \
+    int32_t gridZ,                                                           \
+    void* workspace_addr,                                                    \
+    void* sync_block_lock ARG_LIST_MACRO(_DECLARE_PARAM)) {                    \
     auto kernelHandle = xllm::kernel::npu::KernelLoader::get_instance().           \
                             get_kernel(#kernel_name);                          \
     if (!kernelHandle.is_valid()) {                                            \
       LOG(ERROR) << "Kernel '" << #kernel_name << "' is not registered";       \
       return RT_ERROR_INVALID_VALUE;                                           \
     }                                                                          \
-                                                                               \
+                                                                              \
     uint32_t blockNum = gridX * gridY * gridZ;                                 \
-                                                                               \
+                                                                              \
     void* ffts_addr = nullptr;                                                 \
     uint32_t ffts_len = 0;                                                     \
     rtError_t ret = rtGetC2cCtrlAddr((uint64_t*)&ffts_addr, &ffts_len);        \
@@ -66,10 +66,10 @@
       LOG(ERROR) << "rtGetC2cCtrlAddr failed: " << ret;                        \
       return ret;                                                              \
     }                                                                          \
-                                                                               \
-    ret = xllm::kernel::npu::setup(#kernel_name, &workspace_addr,             \
-       &sync_block_lock, blockNum);                                            \
-    if (ret != ACL_ERROR_NONE) {                                              \
+                                                                              \
+    ret = xllm::kernel::npu::setup(#kernel_name, &workspace_addr,              \
+      &sync_block_lock, blockNum);                                            \
+    if (ret != ACL_ERROR_NONE) {                                               \
       LOG(ERROR) << "Failed to setup workspace and sync block lock for kernel " \
       << #kernel_name << " : error=" << ret;                                  \
       return ret;                                                              \
@@ -83,21 +83,22 @@
         gridZ};                                                                \
                                                                               \
     ret = rtKernelLaunch(kernelHandle.get(),                                   \
-                         blockNum,                                             \
-                         static_cast<void*>(&args),                            \
-                         sizeof(_##kernel_name##_Args),                        \
-                         nullptr,                                              \
-                         stream);                                              \
-                                                                               \
+                        blockNum,                                             \
+                        static_cast<void*>(&args),                            \
+                        sizeof(_##kernel_name##_Args),                        \
+                        nullptr,                                              \
+                        stream);                                              \
+                                                                              \
     if (ret != RT_ERROR_NONE) {                                                \
       LOG(ERROR) << "rtKernelLaunch failed for '" << #kernel_name              \
-                 << "': " << ret;                                              \
-      xllm::kernel::npu::cleanup(workspace_addr, sync_block_lock);             \ 
+                << "': " << ret;                                              \
+      xllm::kernel::npu::cleanup(workspace_addr, sync_block_lock);             \
       return ret;                                                              \
     }                                                                          \
     xllm::kernel::npu::cleanup(workspace_addr, sync_block_lock);               \
-                                                                               \
+                                                                              \
     return RT_ERROR_NONE;                                                      \
-  }
+}
 
-
+ 
+ 
