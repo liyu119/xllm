@@ -16,7 +16,6 @@ limitations under the License.
 #include "xllm/core/kernels/ops_api.h"
 #include <tuple>
 #include <unordered_map>
-
 namespace xllm {
 namespace layer {
 
@@ -66,7 +65,8 @@ Qwen3NextGatedDeltaNetImpl::Qwen3NextGatedDeltaNetImpl(const ModelArgs& args,
                                                     parallel_args,
                                                     options));
 
-  dt_bias_ = register_parameter("dt_bias", torch::ones({num_v_heads_ / tp_size_}, dtype));                                                  
+  dt_bias_ = register_parameter("dt_bias", torch::ones({num_v_heads_ / tp_size_}, options));
+  
   A_log_ = register_parameter("A_log", torch::empty({num_v_heads_ / tp_size_}, torch::kFloat32));
   // 3. Output projection
   o_proj_ = register_module("out_proj",
@@ -127,62 +127,112 @@ torch::Tensor Qwen3NextGatedDeltaNetImpl::forward(
 
   int64_t concat_dim = q.dim() - 1; 
   torch::Tensor mixed_qkv = torch::cat({q, k, v}, concat_dim);
-  
+  mixed_qkv = mixed_qkv.unsqueeze(0).transpose(1,2);
+  int64_t seq_len = mixed_qkv.size(2); 
   // 3. core attention
-  torch::Tensor conv_cache = kv_cache.get_conv_cache();
-  torch::Tensor ssm_cache = kv_cache.get_ssm_cache();
+  // torch::Tensor conv_cache = kv_cache.get_conv_cache();
+  // torch::Tensor ssm_cache = kv_cache.get_ssm_cache();
   if (attn_metadata.is_prefill) {
     // Implement causal_conv1d_fn for prefill stage using PyTorch native operations
     // This is equivalent to: mixed_qkv = F.silu(self.conv1d(mixed_qkv)[:, :, :seq_len])
-    auto conv_weight = conv1d_.weight.squeeze(1); // Remove the singleton dimension
-    auto conv_bias = conv1d_.bias;
-    
-    // Apply 1D convolution
-    // PyTorch conv1d input format: (batch, channels, sequence_length)
-    // Weight format: (out_channels, in_channels/groups, kernel_size)
-    auto conv_output = torch::conv1d(mixed_qkv, conv_weight, conv_bias, 
-                                    /*stride=*/1, /*padding=*/0, /*dilation=*/1, /*groups=*/mixed_qkv.size(1));
-    
-    // Apply SiLU activation
-    mixed_qkv = torch::silu(conv_output);
+    auto device = mixed_qkv.device();
+    auto conv_weight = conv1d_->weight().unsqueeze(1).to(device); 
+    //  auto conv_bias = None;
+    std::cerr << "[PREFILL] mixed_qkv - Device: " << mixed_qkv.device() 
+              << ", Dtype: " << mixed_qkv.dtype() 
+              << ", Shape: " << mixed_qkv.sizes() << std::endl;
+    std::cerr << "[PREFILL] conv_weight - Device: " << conv_weight.device() 
+              << ", Dtype: " << conv_weight.dtype() 
+              << ", Shape: " << conv_weight.sizes() << std::endl;
+
+    auto conv_output = torch::conv1d(
+        mixed_qkv,
+        conv_weight,
+        torch::Tensor(),  
+        /*stride=*/std::vector<int64_t>{1},
+        /*padding=*/std::vector<int64_t>{3},
+        /*dilation=*/std::vector<int64_t>{1},
+        /*groups=*/static_cast<int64_t>(mixed_qkv.size(1))
+    );
+    mixed_qkv = torch::silu(conv_output.slice(2,0,seq_len));
+
+    std::cerr << "[PREFILL] after mixed_qkv - Device: " << mixed_qkv.device() 
+              << ", Dtype: " << mixed_qkv.dtype() 
+              << ", Shape: " << mixed_qkv.sizes() << std::endl;
+    std::cerr << "[PREFILL] a_log - Device: " << A_log_.device()
+              << ", Dtype: " << A_log_.dtype()
+              << ", Shape: " << A_log_.sizes() << std::endl;
+    std::cerr << "[PREFILL] dt_bias_ - Device: " << dt_bias_.device()
+              << ", Dtype: " << dt_bias_.dtype()
+              << ", Shape: " << dt_bias_.sizes() << std::endl;
 
     //g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias)
-    beta = torch::sigmoid(b);
-    torch::Tensor A_log_exp = A_log_float.exp();
+    torch::Tensor beta = torch::sigmoid(b);
+    torch::Tensor A_log_exp = A_log_.exp().to(device);
     torch::Tensor a_float = a.to(torch::kFloat32);
-    torch::Tensor a_plus_dt = a_float + dt_bias;
+    torch::Tensor a_plus_dt = a_float + dt_bias_.to(device);
     torch::Tensor softplus_out = torch::nn::functional::softplus(
         a_plus_dt,
         torch::nn::functional::SoftplusFuncOptions().beta(1.0).threshold(20.0) 
     );
     torch::Tensor g = -A_log_exp * softplus_out;
     g = g.to(a.dtype()).contiguous();
+
+    std::cerr << "[PREFILL] beta - Device: " << beta.device() 
+              << ", Dtype: " << beta.dtype() 
+              << ", Shape: " << beta.sizes() << std::endl;
+    std::cerr << "[PREFILL] g - Device: " << g.device() 
+              << ", Dtype: " << g.dtype() 
+              << ", Shape: " << g.sizes() << std::endl;
+
   } else {
+
+    std::cerr << "decode " << std::endl;
+    std::cerr << "mixed_qkv Shape: " << mixed_qkv.sizes() << std::endl;
+    auto device = mixed_qkv.device();
+
+    auto conv_weight_original = conv1d_->weight();
+    std::cerr << "conv1d Weight Original Shape: " << conv_weight_original.sizes() << std::endl; // [2048,4]
+
+    auto conv_weight = conv_weight_original.unsqueeze(1).contiguous().to(device, /*non_blocking=*/false);
+    std::cerr << "conv1d Weight Expanded Shape: " << conv_weight.sizes() << std::endl; // [2048,1,4]
+
     xllm::kernel::CausalConv1dUpdateParams params;
     params.x = mixed_qkv;
-    params.conv_state = conv_cache;
-    params.weight = conv1d_.weight;
-    params.bias = conv1d_.bias;
+    params.conv_state = torch::Tensor();
+    params.weight = conv_weight;
+    params.bias = torch::Tensor();
     params.activation = true;
     mixed_qkv = xllm::kernel::causal_conv1d_update(params);
+
+    std::cerr << "[DECODE] after mixed_qkv - Device: " << mixed_qkv.device()
+              << ", Dtype: " << mixed_qkv.dtype()
+              << ", Shape: " << mixed_qkv.sizes() << std::endl;
     
     xllm::kernel::FusedGdnGatingParams gdn_params;
-    gdn_params.A_log = A_log_;
+    gdn_params.A_log = A_log_.to(device);
     gdn_params.a = a;
     gdn_params.b = b;
     gdn_params.dt_bias = dt_bias_;
     gdn_params.beta = 1.0f;
     gdn_params.threshold = 20.0f;
     auto [g, beta] = xllm::kernel::fused_gdn_gating(gdn_params);
+    std::cerr << "[DECODE] beta - Device: " << beta.device()
+              << ", Dtype: " << beta.dtype()
+              << ", Shape: " << beta.sizes() << std::endl;
+    std::cerr << "[DECODE] g - Device: " << g.device()
+              << ", Dtype: " << g.dtype()
+              << ", Shape: " << g.sizes() << std::endl;
   }
   
   // Get dimensions
+  mixed_qkv = mixed_qkv.transpose(1,2);
   int64_t batch_size = mixed_qkv.size(0);
-  int64_t sequence_length = mixed_qkv.size(2);
-  
+  int64_t sequence_length = mixed_qkv.size(1);
+    
   // Split sizes for q, k, v
-  std::vector<int64_t> split_sizes = {k_size_, k_size_, v_size_};
-  auto qkv_split = torch::split(mixed_qkv, split_sizes, 1);
+  std::vector<int64_t> split_sizes = {k_size_ / tp_size_, k_size_ / tp_size_, v_size_ / tp_size_};
+  auto qkv_split = torch::split(mixed_qkv, split_sizes, 2);
   
   // Extract q, k, v from the processed mixed_qkv tensor
   auto processed_q = qkv_split[0];  // Shape: [batch_size, k_size_, sequence_length]
@@ -191,14 +241,24 @@ torch::Tensor Qwen3NextGatedDeltaNetImpl::forward(
   
   // Reshape q, k to [1, batch_size, num_k_heads_/tp_size_, head_k_dim_]
   // Reshape v to [1, batch_size, num_v_heads_/tp_size_, head_v_dim_]
-  processed_q = processed_q.view({1, batch_size, num_k_heads_ / tp_size_, head_k_dim_});
-  processed_k = processed_k.view({1, batch_size, num_k_heads_ / tp_size_, head_k_dim_});
-  processed_v = processed_v.view({1, batch_size, num_v_heads_ / tp_size_, head_v_dim_});
+  processed_q = processed_q.view({batch_size, sequence_length, num_k_heads_ / tp_size_, head_k_dim_});
+  processed_k = processed_k.view({batch_size, sequence_length, num_k_heads_ / tp_size_, head_k_dim_});
+  processed_v = processed_v.view({batch_size, sequence_length, num_v_heads_ / tp_size_, head_v_dim_});
   
   // Assign the processed tensors back to q, k, v for downstream use
   q = processed_q;
   k = processed_k;
   v = processed_v;
+
+  std::cerr << "[PREFILL] after q - Device: " << q.device()
+              << ", Dtype: " << q.dtype()
+             << ", Shape: " <<q.sizes() << std::endl;
+  std::cerr << "[PREFILL] k - Device: " <<k.device()
+              << ", Dtype: " << k.dtype()
+              << ", Shape: " << k.sizes() << std::endl;
+  std::cerr << "[PREFILL] v - Device: " <<v.device()
+              << ", Dtype: " << v.dtype()
+              << ", Shape: " << v.sizes() << std::endl;
 
   // 4. output projection
   auto attn_output = o_proj_->forward(rearrange_merge(z));

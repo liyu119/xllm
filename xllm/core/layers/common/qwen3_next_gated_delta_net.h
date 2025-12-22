@@ -23,7 +23,7 @@ limitations under the License.
 #include "framework/parallel_state/parallel_args.h"
 #include "framework/quant_args.h"
 #include "framework/state_dict/state_dict.h"
-#include "layers/linear.h"
+#include "linear.h"
 #include "rms_norm_gated.h"
 
 namespace xllm {
@@ -57,9 +57,9 @@ class Qwen3NextGatedDeltaNetImpl : public torch::nn::Module {
   int64_t head_v_dim_;
   int64_t k_size_;
   int64_t v_size_;
-  int64_t tp_size_;  // 添加tp_size成员变量
+  int64_t tp_size_; 
   torch::Tensor dt_bias_;
-  torch::Tensor a_log_;
+  torch::Tensor A_log_;
 
   ColumnParallelLinear qkvz_proj_{nullptr};
   ColumnParallelLinear ba_proj_{nullptr};
