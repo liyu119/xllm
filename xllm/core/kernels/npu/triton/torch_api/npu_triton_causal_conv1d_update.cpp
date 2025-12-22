@@ -29,7 +29,7 @@ torch::Tensor npu_causal_conv1d_update(
     const std::optional<torch::Tensor>& num_accepted_tokens,
     const std::optional<torch::Tensor>& query_start_loc,
     int32_t max_query_len,
-    std::optional<torch::Tensor>& intermediate_conv_window,
+    const std::optional<torch::Tensor>& intermediate_conv_window,
     int32_t pad_slot_id,
     bool validate_data) {
     if (query_start_loc.has_value()) {

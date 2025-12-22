@@ -14,10 +14,232 @@ limitations under the License.
 
 #include <glog/logging.h>
 #include "xllm/core/kernels/ops_api.h"
+// Include headers for kernel loading
+#include "xllm/core/kernels/npu/triton/kernel_loader.h"
+#include "xllm/core/kernels/npu/triton/test/test_utils.h"
+#include <torch_npu/torch_npu.h>
+#include <acl/acl.h>
+
 #include <tuple>
 #include <unordered_map>
 namespace xllm {
 namespace layer {
+
+
+namespace {
+torch::Tensor l2norm(const torch::Tensor& x, int64_t dim, double eps = 1e-6) {
+    return x / (x.norm(2, dim, true) + eps);
+}
+
+std::tuple<torch::Tensor, c10::optional<torch::Tensor>> torch_chunk_gated_delta_rule(
+    torch::Tensor query,
+    torch::Tensor key,
+    torch::Tensor value,
+    torch::Tensor g,
+    torch::Tensor beta,
+    int64_t chunk_size = 64,
+    c10::optional<torch::Tensor> initial_state = c10::nullopt,
+    bool output_final_state = false,
+    bool use_qk_l2norm_in_kernel = false) {
+    
+    auto initial_dtype = query.dtype();
+    
+    if (use_qk_l2norm_in_kernel) {
+        query = l2norm(query, -1, 1e-6);
+        key = l2norm(key, -1, 1e-6);
+    }
+    
+    // 转换数据类型并调整维度 [B, S, H, D] -> [B, H, S, D]
+    auto to_float32 = [](torch::Tensor x) {
+        return x.transpose(1, 2).contiguous().to(torch::kFloat32);
+    };
+    
+    query = to_float32(query);
+    key = to_float32(key);
+    value = to_float32(value);
+    beta = to_float32(beta);
+    g = to_float32(g);
+    
+    auto batch_size = query.size(0);
+    auto num_heads = query.size(1);
+    auto sequence_length = query.size(2);
+    auto k_head_dim = key.size(-1);
+    auto v_head_dim = value.size(-1);
+    
+    // 计算需要 padding 的长度
+    int64_t pad_size = (chunk_size - sequence_length % chunk_size) % chunk_size;
+    
+    query = torch::nn::functional::pad(query, torch::nn::functional::PadFuncOptions({0, 0, 0, pad_size}));
+    key = torch::nn::functional::pad(key, torch::nn::functional::PadFuncOptions({0, 0, 0, pad_size}));
+    value = torch::nn::functional::pad(value, torch::nn::functional::PadFuncOptions({0, 0, 0, pad_size}));
+    beta = torch::nn::functional::pad(beta, torch::nn::functional::PadFuncOptions({0, pad_size}));
+    g = torch::nn::functional::pad(g, torch::nn::functional::PadFuncOptions({0, pad_size}));
+    
+    int64_t total_sequence_length = sequence_length + pad_size;
+    float scale = 1.0 / std::sqrt(query.size(-1));
+    query = query * scale;
+    
+    // 计算 v_beta 和 k_beta
+    auto v_beta = value * beta.unsqueeze(-1);
+    auto k_beta = key * beta.unsqueeze(-1);
+    
+    // 重塑为分块结构 [B, H, num_chunks, chunk_size, D]
+    auto reshape_to_chunks = [chunk_size](torch::Tensor x) {
+        auto shape = x.sizes();
+        std::vector<int64_t> new_shape = {
+            shape[0], shape[1], 
+            shape[2] / chunk_size, chunk_size, 
+            shape[3]
+        };
+        return x.reshape(new_shape);
+    };
+    
+    query = reshape_to_chunks(query);
+    key = reshape_to_chunks(key);
+    value = reshape_to_chunks(value);
+    k_beta = reshape_to_chunks(k_beta);
+    v_beta = reshape_to_chunks(v_beta);
+    
+    // g 重塑 [B, H, num_chunks, chunk_size]
+    auto g_shape = g.sizes();
+    std::vector<int64_t> g_new_shape = {
+        g_shape[0], g_shape[1], 
+        g_shape[2] / chunk_size, chunk_size
+    };
+    g = g.reshape(g_new_shape);
+    
+    // 创建上三角掩码
+    auto mask = torch::triu(
+        torch::ones({chunk_size, chunk_size}, torch::TensorOptions().dtype(torch::kBool).device(query.device())),
+        0
+    );
+    
+    // Chunk decay 计算
+    g = g.cumsum(-1);
+    auto decay_mask = ((g.unsqueeze(-1) - g.unsqueeze(-2)).tril().exp().to(torch::kFloat32)).tril();
+    
+    // 注意力计算
+    auto attn = -((k_beta @ key.transpose(-1, -2)) * decay_mask).masked_fill(mask, 0.0);
+    
+    // 循环计算注意力矩阵
+    for (int64_t i = 1; i < chunk_size; ++i) {
+        auto row = attn.slice(-2, i, i+1).slice(-1, 0, i).clone();
+        auto sub = attn.slice(-2, 0, i).slice(-1, 0, i).clone();
+        attn.slice(-2, i, i+1).slice(-1, 0, i) = row + (row.unsqueeze(-1) * sub).sum(-2);
+    }
+    
+    attn = attn + torch::eye(chunk_size, torch::TensorOptions().dtype(attn.dtype()).device(attn.device()));
+    value = attn @ v_beta;
+    
+    // 计算 k_cumdecay
+    auto k_cumdecay = attn @ (k_beta * g.exp().unsqueeze(-1));
+    
+    // 初始化状态
+    torch::Tensor last_recurrent_state;
+    if (!initial_state.has_value()) {
+        last_recurrent_state = torch::zeros(
+            {batch_size, num_heads, k_head_dim, v_head_dim},
+            torch::TensorOptions().dtype(value.dtype()).device(value.device())
+        );
+    } else {
+        last_recurrent_state = initial_state.value().to(value);
+    }
+    
+    // 创建输出张量
+    auto core_attn_out = torch::zeros_like(value);
+    
+    // 创建新的上三角掩码 (diagonal=1)
+    mask = torch::triu(
+        torch::ones({chunk_size, chunk_size}, torch::TensorOptions().dtype(torch::kBool).device(query.device())),
+        1
+    );
+    
+    // 遍历每个 chunk
+    int64_t num_chunks = total_sequence_length / chunk_size;
+    for (int64_t i = 0; i < num_chunks; ++i) {
+        auto q_i = query.select(2, i);
+        auto k_i = key.select(2, i);
+        auto v_i = value.select(2, i);
+        
+        // 计算注意力
+        auto attn_i = (q_i @ k_i.transpose(-1, -2) * decay_mask.select(2, i)).masked_fill_(mask, 0.0);
+        
+        // 计算 v_prime
+        auto v_prime = k_cumdecay.select(2, i) @ last_recurrent_state;
+        
+        // 计算 v_new
+        auto v_new = v_i - v_prime;
+        
+        // 计算注意力中间结果
+        auto attn_inter = (q_i * g.select(2, i).unsqueeze(-1).exp()) @ last_recurrent_state;
+        
+        // 计算核心注意力输出
+        core_attn_out.select(2, i) = attn_inter + attn_i @ v_new;
+        
+        // 更新状态
+        last_recurrent_state = 
+            last_recurrent_state * g.select(2, i).select(-1, -1).unsqueeze(-1).unsqueeze(-1).exp() +
+            (k_i * (g.select(2, i).select(-1, -1).unsqueeze(-1) - g.select(2, i)).exp().unsqueeze(-1))
+                .transpose(-1, -2) @ v_new;
+    }
+    
+    // 处理最终状态输出
+    if (!output_final_state) {
+        last_recurrent_state = torch::Tensor(); // 置为空张量
+    }
+    
+    // 重塑输出并移除 padding
+    auto core_attn_out_shape = core_attn_out.sizes();
+    std::vector<int64_t> reshape_shape = {
+        core_attn_out_shape[0], core_attn_out_shape[1],
+        core_attn_out_shape[2] * core_attn_out_shape[3],
+        core_attn_out_shape[4]
+    };
+    core_attn_out = core_attn_out.reshape(reshape_shape);
+    
+    // 裁剪掉 padding 部分
+    core_attn_out = core_attn_out.slice(2, 0, sequence_length);
+    
+    // 恢复维度顺序和数据类型
+    core_attn_out = core_attn_out.transpose(1, 2).contiguous().to(initial_dtype);
+    
+    return std::make_tuple(core_attn_out, last_recurrent_state);
+
+}
+} // namespace
+
+void Qwen3NextGatedDeltaNetImpl::load_fused_gdn_gating_kernel() {
+  // Set kernel name and binary filename
+  fused_gdn_gating_kernel_name_ = "fused_gdn_gating_head8_kernel";
+  fused_gdn_gating_binary_filename_ = "fused_gdn_gating_head8_kernel.npubin";
+  
+  try {
+    // Initialize NPU if available
+    torch_npu::init_npu("npu:0");
+    
+    // Get binary path
+    std::string binary_path = GetKernelBinaryPath(fused_gdn_gating_binary_filename_);
+    
+    // Load kernel using KernelLoader
+    auto& loader = xllm::kernel::npu::KernelLoader::get_instance();
+    auto handle = loader.get_kernel(fused_gdn_gating_kernel_name_);
+    if (!handle.is_valid()) {
+      handle = loader.load_kernel(fused_gdn_gating_kernel_name_, binary_path);
+    }
+    
+    if (handle.is_valid()) {
+      is_kernel_loaded_ = true;
+      LOG(INFO) << "Successfully loaded fused GDN gating kernel: " << fused_gdn_gating_kernel_name_;
+    } else {
+      is_kernel_loaded_ = false;
+      LOG(WARNING) << "Failed to load fused GDN gating kernel: " << fused_gdn_gating_kernel_name_
+                   << " from " << binary_path;
+    }
+  } catch (const std::exception& e) {
+    is_kernel_loaded_ = false;
+    LOG(WARNING) << "Exception occurred while loading fused GDN gating kernel: " << e.what();
+  }
+}
 
 Qwen3NextGatedDeltaNetImpl::Qwen3NextGatedDeltaNetImpl(const ModelArgs& args,
                                        const QuantArgs& quant_args,
@@ -39,7 +261,7 @@ Qwen3NextGatedDeltaNetImpl::Qwen3NextGatedDeltaNetImpl(const ModelArgs& args,
   conv1d_ = register_module("conv1d",
                             ColumnParallelLinear(args.linear_conv_kernel_dim(),
                                                 k_size_ * 2 + v_size_,
-                                                /*bias=*/has_bias,
+                                                /*bias=*/false,
                                                 /*gather_output=*/false,
                                                 quant_args,
                                                 parallel_args,
@@ -81,7 +303,14 @@ Qwen3NextGatedDeltaNetImpl::Qwen3NextGatedDeltaNetImpl(const ModelArgs& args,
 
   // 4. RMSNorm
   norm_ = register_module("norm", RmsNormGated(head_v_dim_, args.rms_norm_eps(), options));
-
+  
+  // Initialize kernel loading related members
+  is_kernel_loaded_ = false;
+  fused_gdn_gating_kernel_name_ = "";
+  fused_gdn_gating_binary_filename_ = "";
+  
+  // Load the fused GDN gating kernel
+  load_fused_gdn_gating_kernel();
 }
 
 torch::Tensor Qwen3NextGatedDeltaNetImpl::forward(
@@ -102,9 +331,8 @@ torch::Tensor Qwen3NextGatedDeltaNetImpl::forward(
     std::vector<int64_t> new_shape;
     int64_t tensor_dim = t.dim();
 
-    // 2. 安全切片：取除最后 2 维外的所有维度（用正数索引替代 -2）
-    int64_t slice_end = tensor_dim - 2; // 正数索引，避免无符号数解析坑
-    if (slice_end > 0) { // 仅当有前置维度时才切片（≥3 维）
+    int64_t slice_end = tensor_dim - 2; 
+    if (slice_end > 0) { 
         auto valid_slice = t.sizes().slice(0, slice_end);
         new_shape = std::vector<int64_t>(valid_slice.begin(), valid_slice.end());
     }
@@ -133,8 +361,6 @@ torch::Tensor Qwen3NextGatedDeltaNetImpl::forward(
   // torch::Tensor conv_cache = kv_cache.get_conv_cache();
   // torch::Tensor ssm_cache = kv_cache.get_ssm_cache();
   if (attn_metadata.is_prefill) {
-    // Implement causal_conv1d_fn for prefill stage using PyTorch native operations
-    // This is equivalent to: mixed_qkv = F.silu(self.conv1d(mixed_qkv)[:, :, :seq_len])
     auto device = mixed_qkv.device();
     auto conv_weight = conv1d_->weight().unsqueeze(1).to(device); 
     //  auto conv_bias = None;
@@ -184,6 +410,13 @@ torch::Tensor Qwen3NextGatedDeltaNetImpl::forward(
     std::cerr << "[PREFILL] g - Device: " << g.device() 
               << ", Dtype: " << g.dtype() 
               << ", Shape: " << g.sizes() << std::endl;
+    // Get dimensions and process mixed_qkv tensor
+    auto [processed_q, processed_k, processed_v] = process_mixed_qkv(mixed_qkv);
+  
+    auto [core_attn_out, last_recurrent_state] = torch_chunk_gated_delta_rule(processed_q, processed_k, processed_v, g, beta);
+    // 4. output projection
+    auto attn_output = o_proj_->forward(rearrange_merge(z));
+    return attn_output; 
 
   } else {
 
@@ -225,6 +458,16 @@ torch::Tensor Qwen3NextGatedDeltaNetImpl::forward(
               << ", Shape: " << g.sizes() << std::endl;
   }
   
+
+
+  // 4. output projection
+  auto attn_output = o_proj_->forward(rearrange_merge(z));
+  return attn_output; 
+}
+
+// Method to process the mixed_qkv tensor to extract and reshape q, k, v tensors
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> 
+Qwen3NextGatedDeltaNetImpl::process_mixed_qkv(torch::Tensor& mixed_qkv) {
   // Get dimensions
   mixed_qkv = mixed_qkv.transpose(1,2);
   int64_t batch_size = mixed_qkv.size(0);
@@ -245,38 +488,12 @@ torch::Tensor Qwen3NextGatedDeltaNetImpl::forward(
   processed_k = processed_k.view({batch_size, sequence_length, num_k_heads_ / tp_size_, head_k_dim_});
   processed_v = processed_v.view({batch_size, sequence_length, num_v_heads_ / tp_size_, head_v_dim_});
   
-  // Assign the processed tensors back to q, k, v for downstream use
-  q = processed_q;
-  k = processed_k;
-  v = processed_v;
-
-  std::cerr << "[PREFILL] after q - Device: " << q.device()
-              << ", Dtype: " << q.dtype()
-             << ", Shape: " <<q.sizes() << std::endl;
-  std::cerr << "[PREFILL] k - Device: " <<k.device()
-              << ", Dtype: " << k.dtype()
-              << ", Shape: " << k.sizes() << std::endl;
-  std::cerr << "[PREFILL] v - Device: " <<v.device()
-              << ", Dtype: " << v.dtype()
-              << ", Shape: " << v.sizes() << std::endl;
-
-  // 4. output projection
-  auto attn_output = o_proj_->forward(rearrange_merge(z));
-  return attn_output; 
+  return std::make_tuple(processed_q, processed_k, processed_v);
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> 
 Qwen3NextGatedDeltaNetImpl::process_qkvz_tensor(const torch::Tensor& qkvz) {
   
-
-  //std::vector<int64_t> new_tensor_shape_qkvz = [&]() {
-  //  std::vector<int64_t> dims(qkvz.size(0));
-  //  dims.push_back(num_k_heads_ / tp_size_);
-  // dims.push_back(head_k_dim_ + head_k_dim_ + (head_v_dim_ + head_v_dim_) * num_v_heads_ / num_k_heads_);
-  //  return dims;
-  //}();
-
-  // 完整代码片段
   std::vector<int64_t> new_tensor_shape_qkvz = [&]() {
     std::vector<int64_t> dims;
     int64_t total_elems = qkvz.numel();
@@ -352,6 +569,10 @@ Qwen3NextGatedDeltaNetImpl::process_ba_tensor(const torch::Tensor& ba) {
 }
 
 void Qwen3NextGatedDeltaNetImpl::load_state_dict(const StateDict& state_dict) {
+  if (!is_kernel_loaded_) {
+    load_fused_gdn_gating_kernel();
+  }
+  
   qkvz_proj_->load_state_dict(state_dict.get_dict_with_prefix("in_proj_qkvz."));
   ba_proj_->load_state_dict(state_dict.get_dict_with_prefix("in_proj_ba."));
   
