@@ -16,8 +16,13 @@ limitations under the License.
 #pragma once
 
 #include "core/layers/npu/npu_deepseek_v2_decoder_layer_impl.h"
+#include "core/layers/npu/npu_lm_head_impl.h"
+#include "core/layers/npu/npu_pos_embedding_impl.h"
+#include "core/layers/npu/npu_rms_norm_impl.h"
+#include "core/layers/npu/npu_word_embedding_impl.h"
+#include "core/layers/npu/rotary_embedding.h"
 #include "llm_model_base.h"
-
+#include "models/model_registry.h"
 // DeepSeek v2 compatible with huggingface weights
 // ref to:
 // https://github.com/vllm-project/vllm/blob/v0.6.6/vllm/model_executor/models/deepseek_v2.py

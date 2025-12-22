@@ -43,10 +43,22 @@ class Glm4MoeMtpModelImpl : public MtpModelImplBase<Glm4MoeDecoderLayer> {
 TORCH_MODULE(Glm4MoeMtpModel);
 
 class Glm4MoeMtpForCausalLMImpl
-    : public MtpForCausalLMImplBase<Glm4MoeMtpModel> {
+    : public LlmForCausalLMImplBase<Glm4MoeMtpModel> {
  public:
   Glm4MoeMtpForCausalLMImpl(const ModelContext& context)
-      : MtpForCausalLMImplBase<Glm4MoeMtpModel>(context) {}
+      : LlmForCausalLMImplBase<Glm4MoeMtpModel>(context) {}
+
+  void load_model(std::unique_ptr<ModelLoader> loader,
+                  std::string prefix = "model.") override {
+    for (const auto& state_dict : loader->get_state_dicts()) {
+      model_->load_state_dict(state_dict->get_dict_with_prefix(prefix));
+    }
+
+    // verify
+    model_->verify_loaded_weights(prefix);
+
+    model_->merge_loaded_weights();
+  }
 };
 TORCH_MODULE(Glm4MoeMtpForCausalLM);
 

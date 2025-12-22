@@ -17,7 +17,11 @@ limitations under the License.
 #pragma once
 
 #include "core/layers/npu/npu_llama_decoder_layer_impl.h"
+#include "core/layers/npu/npu_rms_norm_impl.h"
+#include "core/util/tensor_helper.h"
 #include "llm_model_base.h"
+#include "models/model_registry.h"
+#include "xllm_kernels/core/include/atb_speed/log.h"
 
 // llama2 model compatible with huggingface weights
 namespace xllm {

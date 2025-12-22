@@ -15,7 +15,8 @@ limitations under the License.
 
 #pragma once
 
-#include "core/layers/npu/npu_deepseek_v32_decoder_layer_impl.h"
+#include "core/layers/npu/npu_column_parallel_linear_impl.h"
+#include "deepseek_v2.h"
 #include "llm_model_base.h"
 
 // DeepSeek v32 compatible with huggingface weights
@@ -248,26 +249,22 @@ class DeepseekV32ModelImpl : public torch::nn::Module {
 };
 TORCH_MODULE(DeepseekV32Model);
 
-class DeepseekV32ForCausalLMImpl
-    : public LlmForCausalLMImplBase<DeepseekV32Model> {
+class DeepseekV2MtpForCausalLMImpl
+    : public LlmForCausalLMImplBase<DeepseekV2MtpModel> {
  public:
-  DeepseekV32ForCausalLMImpl(const ModelContext& context)
-      : LlmForCausalLMImplBase<DeepseekV32Model>(context),
-        first_k_dense_replace_(
-            context.get_model_args().first_k_dense_replace()) {}
+  DeepseekV2MtpForCausalLMImpl(const ModelContext& context)
+      : LlmForCausalLMImplBase<DeepseekV2MtpModel>(context) {}
 
-  void prepare_expert_weight(int32_t layer_id,
-                             const std::vector<int32_t>& expert_ids) override {
-    model_->prepare_expert_weight(layer_id + first_k_dense_replace_,
-                                  expert_ids);
+  void load_model(std::unique_ptr<ModelLoader> loader,
+                  std::string prefix = "model.") override {
+    for (const auto& state_dict : loader->get_state_dicts()) {
+      model_->load_state_dict(state_dict->get_dict_with_prefix(prefix));
+    }
+
+    model_->verify_loaded_weights(prefix);
+
+    model_->merge_loaded_weights();
   }
-
-  void update_expert_weight(int32_t layer_id) override {
-    model_->update_expert_weight(layer_id + first_k_dense_replace_);
-  }
-
- private:
-  int32_t first_k_dense_replace_;
 };
 TORCH_MODULE(DeepseekV32ForCausalLM);
 
