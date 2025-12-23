@@ -126,7 +126,7 @@ bool KernelRegistry::register_kernel(const std::string& kernel_name,
   if (last_dot != std::string::npos) {
     json_path = json_path.substr(0, last_dot) + ".json";
   } else {
-    json_path = binary_path + ".json";
+    json_path = binary_path + "/" + kernel_name + ".json";
   }
 
   std::string parsed_kernel_name = kernel_name;
@@ -158,7 +158,7 @@ bool KernelRegistry::register_kernel(const std::string& kernel_name,
   }
 
   uint32_t file_size = 0;
-  char* buffer = load_binary_file(binary_path, file_size);
+  char* buffer = load_binary_file(binary_path + "/" + kernel_name + ".npubon", file_size);
   if (!buffer) {
     LOG(ERROR) << "Failed to load binary file for kernel '" << kernel_name
                << "'";
