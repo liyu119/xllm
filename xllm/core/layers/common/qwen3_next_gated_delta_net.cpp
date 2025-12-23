@@ -22,6 +22,8 @@ limitations under the License.
 
 #include <tuple>
 #include <unordered_map>
+#include <vector>
+
 namespace xllm {
 namespace layer {
 
@@ -208,36 +210,38 @@ std::tuple<torch::Tensor, c10::optional<torch::Tensor>> torch_chunk_gated_delta_
 }
 } // namespace
 
-void Qwen3NextGatedDeltaNetImpl::load_fused_gdn_gating_kernel() {
+void Qwen3NextGatedDeltaNetImpl::load_triton_kernel(
+    const std::string& kernel_name,
+    const std::string& binary_filename) {
   // Set kernel name and binary filename
-  fused_gdn_gating_kernel_name_ = "fused_gdn_gating_head8_kernel";
-  fused_gdn_gating_binary_filename_ = "fused_gdn_gating_head8_kernel.npubin";
+  triton_kernel_name_ = kernel_name;
+  triton_binary_filename_ = binary_filename;
   
   try {
     // Initialize NPU if available
     torch_npu::init_npu("npu:0");
     
     // Get binary path
-    std::string binary_path = GetKernelBinaryPath(fused_gdn_gating_binary_filename_);
+    std::string binary_path = GetKernelBinaryPath(triton_binary_filename_);
     
     // Load kernel using KernelLoader
     auto& loader = xllm::kernel::npu::KernelLoader::get_instance();
-    auto handle = loader.get_kernel(fused_gdn_gating_kernel_name_);
+    auto handle = loader.get_kernel(triton_kernel_name_);
     if (!handle.is_valid()) {
-      handle = loader.load_kernel(fused_gdn_gating_kernel_name_, binary_path);
+      handle = loader.load_kernel(triton_kernel_name_, binary_path);
     }
     
     if (handle.is_valid()) {
       is_kernel_loaded_ = true;
-      LOG(INFO) << "Successfully loaded fused GDN gating kernel: " << fused_gdn_gating_kernel_name_;
+      LOG(INFO) << "Successfully loaded triton kernel: " << triton_kernel_name_;
     } else {
       is_kernel_loaded_ = false;
-      LOG(WARNING) << "Failed to load fused GDN gating kernel: " << fused_gdn_gating_kernel_name_
+      LOG(WARNING) << "Failed to load triton kernel: " << triton_kernel_name_
                    << " from " << binary_path;
     }
   } catch (const std::exception& e) {
     is_kernel_loaded_ = false;
-    LOG(WARNING) << "Exception occurred while loading fused GDN gating kernel: " << e.what();
+    LOG(WARNING) << "Exception occurred while loading triton kernel: " << e.what();
   }
 }
 
@@ -306,11 +310,19 @@ Qwen3NextGatedDeltaNetImpl::Qwen3NextGatedDeltaNetImpl(const ModelArgs& args,
   
   // Initialize kernel loading related members
   is_kernel_loaded_ = false;
-  fused_gdn_gating_kernel_name_ = "";
-  fused_gdn_gating_binary_filename_ = "";
+  gdn_triton_kernel_name_ = "fused_gdn_gating_head8_kernel";
+  gdn_triton_binary_filename_ = "fused_gdn_gating_head8_kernel.npubin";
+
+  conv_triton_kernel_name_ = "_causal_conv1d_update_kernel_no_cache_len_no_mtp";
+  conv_triton_binary_filename_ = "_causal_conv1d_update_kernel_no_cache_len_no_mtp.npubin";
+
+  recurrent_triton_kernel_name_ = "fused_recurrent_gated_delta_rule_fwd_kernel";
+  recurrent_triton_binary_filename_ = "fused_recurrent_gated_delta_rule_fwd_kernel.npubin";
   
   // Load the fused GDN gating kernel
-  load_fused_gdn_gating_kernel();
+  load_triton_kernel(gdn_triton_kernel_name_, gdn_triton_binary_filename_);
+  load_triton_kernel(conv_triton_kernel_name_, conv_triton_binary_filename_);
+  load_triton_kernel(recurrent_triton_kernel_name_, recurrent_triton_binary_filename_);
 }
 
 torch::Tensor Qwen3NextGatedDeltaNetImpl::forward(
