@@ -15,6 +15,9 @@ limitations under the License.
 
 #pragma once
 
+#if defined(USE_NPU_TORCH)
+#include "core/layers/common/attention_mask.h"
+#endif
 #include "core/layers/qwen3_decoder_layer.h"
 #include "llm_model_base.h"
 
@@ -47,6 +50,18 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
     norm_ = register_module("norm", layer::RMSNorm(context));
     embed_tokens_ =
         register_module("embed_tokens", layer::WordEmbedding(context));
+
+    cos_sin_ = layer::rotary::get_concat_rotary_embedding(
+        128,
+        model_args.max_position_embeddings(),
+        model_args.rope_theta(),
+        options);
+    int32_t mask_value = FLAGS_enable_chunked_prefill ? -9984 : 1;
+
+#if defined(USE_NPU_TORCH)
+    attn_mask_ = layer::AttentionMask(
+        options.device(), options.dtype().toScalarType(), mask_value);
+#endif
     for (int32_t i = 0; i < model_args.n_layers(); i++) {
       auto layer = QWen3DecoderLayer(context);
       layers_.push_back(layer);
@@ -114,14 +129,37 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
       deep_stacks = input_params.deep_stacks;  // [num_deepstack, hidden_size]
     }
 
-    auto& dp_token_nums = input_params_new.dp_global_token_nums;
-    std::replace(dp_token_nums.begin(), dp_token_nums.end(), 0, 1);
-    auto attn_metadata = layer::AttentionMetadata::build(input_params_new);
-    bool only_prefill =
-        (attn_metadata.is_prefill || attn_metadata.is_chunked_prefill);
-    if (positions.dim() == 2 && only_prefill && !mrope_section_.empty()) {
-      std::tie(attn_metadata.mrope_cos, attn_metadata.mrope_sin) =
-          apply_mrope(positions);
+    if (positions.dim() == 2) {  // mrope
+      auto apply = [this](torch::Tensor x) {
+        auto freqs_t = x[0].clone();
+        for (int dim_idx = 1; dim_idx <= 2; ++dim_idx) {
+          int64_t offset = dim_idx;
+          int64_t section_len = mrope_section_[dim_idx];
+          int64_t length = section_len * 3;
+          auto idx_first_half = torch::arange(offset, length, 3, torch::kLong);
+          auto idx_second_half = torch::arange(offset, length, 3, torch::kLong);
+          auto idx_tensor =
+              torch::cat({idx_first_half, idx_second_half}, 0).to(x.device());
+          // freqs_t[..., idx] = freqs[dim_idx][..., idx]
+          auto src = x[dim_idx].index_select(-1, idx_tensor);
+          freqs_t.index_copy_(-1, idx_tensor, src);
+        }
+        return freqs_t;
+      };
+      cos_pos = apply(cos_pos.reshape(
+          {positions.sizes().front(), -1, cos_pos.sizes().back()}));
+      sin_pos = apply(sin_pos.reshape(
+          {positions.sizes().front(), -1, sin_pos.sizes().back()}));
+    }
+
+    torch::Tensor max_of_seq = torch::max(input_params.kv_seq_lens);
+
+    layer::update_dummy_run_input(dp_rank_, positions, input_params_new);
+    auto attn_metadata =
+        get_attention_metadata(input_params_new, h, max_of_seq.item<int32_t>());
+    if (positions.dim() == 2) {
+      attn_metadata.mrope_cos = std::move(cos_pos);
+      attn_metadata.mrope_sin = std::move(sin_pos);
     }
 
     std::optional<torch::Tensor> residual;
@@ -144,6 +182,46 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
     }
     return std::get<0>(norm_(h, residual));
   }
+
+ private:
+  layer::AttentionMetadata get_attention_metadata(
+      const ModelInputParams& params,
+      const torch::Tensor& h,
+      const int32_t max_seq_len_batch) {
+#if defined(USE_NPU_TORCH)
+    max_seq_len_ = std::max(max_seq_len_batch, max_seq_len_);
+    auto attn_mask = attn_mask_.get_attn_mask(
+        max_seq_len_, h.dtype().toScalarType(), h.device());
+    if (FLAGS_enable_chunked_prefill) {
+      const size_t batch_size = params.q_seq_lens_vec.size();
+      if (batch_size > 0) {
+        std::vector<torch::Tensor> req_mask_vec;
+        req_mask_vec.reserve(batch_size);
+
+        for (size_t j = 0; j < batch_size; ++j) {
+          const int64_t start =
+              params.kv_seq_lens_vec[j] - params.q_seq_lens_vec[j];
+          const int64_t end = params.kv_seq_lens_vec[j];
+
+          auto req_mask_slice = attn_mask.slice(0, start, end);
+          req_mask_vec.emplace_back(req_mask_slice);
+        }
+        attn_mask = torch::cat(req_mask_vec, 0);
+      }
+    }
+    return layer::AttentionMetadata::build(params, attn_mask);
+#else
+    max_seq_len_ = FLAGS_enable_chunked_prefill
+                       ? std::max(max_seq_len_batch, max_seq_len_)
+                       : 128;
+    return layer::AttentionMetadata::build(params);
+#endif
+  }
+
+  torch::Tensor viusal_pos_mask_;
+#if defined(USE_NPU_TORCH)
+  layer::AttentionMask attn_mask_;
+#endif
 };
 TORCH_MODULE(QWen3Model);
 

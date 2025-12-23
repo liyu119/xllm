@@ -36,6 +36,9 @@ limitations under the License.
 #if defined(USE_MLU)
 #include "core/layers/mlu/attention.h"
 #endif
+#if defined(USE_NPU)
+#include "core/layers/npu_torch/attention.h"
+#endif
 
 namespace xllm {
 
@@ -136,7 +139,7 @@ class LlmModelImplBase : public torch::nn::Module {
         state_dict.get_dict_with_prefix("embed_tokens."));
 
     // call each layer's load_state_dict function
-    for (int i = 0; i < layers_.size(); i++) {
+    for (size_t i = 0; i < layers_.size(); i++) {
       layers_[i]->load_state_dict(
           state_dict.get_dict_with_prefix("layers." + std::to_string(i) + "."));
     }
@@ -151,6 +154,12 @@ class LlmModelImplBase : public torch::nn::Module {
 
  protected:
   torch::Tensor cos_sin_;
+  int32_t max_seq_len_ = 0;
+  torch::Tensor cos_pos_;
+  torch::Tensor sin_pos_;
+  int32_t device_id = 0;
+  int32_t dp_rank_ = 0;
+
   std::vector<int64_t> mrope_section_;
   layer::WordEmbedding embed_tokens_{nullptr};
   layer::RMSNorm norm_{nullptr};
@@ -236,6 +245,7 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
  protected:
   // parameter members, must be registered
   LlmModelType model_{nullptr};
+  int32_t device_id = 0;
   bool tie_word_embeddings{false};
   // test
   layer::LmHead lm_head_{nullptr};
