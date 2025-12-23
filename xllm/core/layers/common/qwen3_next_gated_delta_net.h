@@ -50,7 +50,7 @@ class Qwen3NextGatedDeltaNetImpl : public torch::nn::Module {
   std::tuple<torch::Tensor, torch::Tensor> 
   process_ba_tensor(const torch::Tensor& ba);
 
-  void load_fused_gdn_gating_kernel(const std::string& kernel_name,  const std::string& binary_filename);
+  void load_triton_kernel(const std::string& kernel_name,  const std::string& binary_filename);
   
   std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> 
   process_mixed_qkv(
@@ -74,10 +74,6 @@ class Qwen3NextGatedDeltaNetImpl : public torch::nn::Module {
   RowParallelLinear o_proj_{nullptr};
 
   RmsNormGated norm_{nullptr};
-
-  bool is_kernel_loaded_;
-  std::string fused_gdn_gating_kernel_name_;
-  std::string fused_gdn_gating_binary_filename_;
 };
 TORCH_MODULE(Qwen3NextGatedDeltaNet);
 

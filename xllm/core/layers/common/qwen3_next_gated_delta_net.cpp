@@ -213,30 +213,27 @@ std::tuple<torch::Tensor, c10::optional<torch::Tensor>> torch_chunk_gated_delta_
 void Qwen3NextGatedDeltaNetImpl::load_triton_kernel(
     const std::string& kernel_name,
     const std::string& binary_filename) {
-  // Set kernel name and binary filename
-  triton_kernel_name_ = kernel_name;
-  triton_binary_filename_ = binary_filename;
   
   try {
     // Initialize NPU if available
     torch_npu::init_npu("npu:0");
     
     // Get binary path
-    std::string binary_path = GetKernelBinaryPath(triton_binary_filename_);
+    std::string binary_path = GetKernelBinaryPath(binary_filename);
     
     // Load kernel using KernelLoader
     auto& loader = xllm::kernel::npu::KernelLoader::get_instance();
-    auto handle = loader.get_kernel(triton_kernel_name_);
+    auto handle = loader.get_kernel(kernel_name);
     if (!handle.is_valid()) {
-      handle = loader.load_kernel(triton_kernel_name_, binary_path);
+      handle = loader.load_kernel(kernel_name, binary_path);
     }
     
     if (handle.is_valid()) {
       is_kernel_loaded_ = true;
-      LOG(INFO) << "Successfully loaded triton kernel: " << triton_kernel_name_;
+      LOG(INFO) << "Successfully loaded triton kernel: " << kernel_name;
     } else {
       is_kernel_loaded_ = false;
-      LOG(WARNING) << "Failed to load triton kernel: " << triton_kernel_name_
+      LOG(WARNING) << "Failed to load triton kernel: " << kernel_name
                    << " from " << binary_path;
     }
   } catch (const std::exception& e) {
@@ -309,7 +306,6 @@ Qwen3NextGatedDeltaNetImpl::Qwen3NextGatedDeltaNetImpl(const ModelArgs& args,
   norm_ = register_module("norm", RmsNormGated(head_v_dim_, args.rms_norm_eps(), options));
   
   // Initialize kernel loading related members
-  is_kernel_loaded_ = false;
   gdn_triton_kernel_name_ = "fused_gdn_gating_head8_kernel";
   gdn_triton_binary_filename_ = "fused_gdn_gating_head8_kernel.npubin";
 
@@ -458,7 +454,7 @@ torch::Tensor Qwen3NextGatedDeltaNetImpl::forward(
     gdn_params.A_log = A_log_.to(device);
     gdn_params.a = a;
     gdn_params.b = b;
-    gdn_params.dt_bias = dt_bias_;
+    gdn_params.dt_bias = dt_bias_to(torch::kFloat32).to(device, /*non_blocking=*/false);
     gdn_params.beta = 1.0f;
     gdn_params.threshold = 20.0f;
     auto [g, beta] = xllm::kernel::fused_gdn_gating(gdn_params);
@@ -468,6 +464,31 @@ torch::Tensor Qwen3NextGatedDeltaNetImpl::forward(
     std::cerr << "[DECODE] g - Device: " << g.device()
               << ", Dtype: " << g.dtype()
               << ", Shape: " << g.sizes() << std::endl;
+
+    // Get dimensions and process mixed_qkv tensor
+    auto [processed_q, processed_k, processed_v] = process_mixed_qkv(mixed_qkv);
+    
+    int64_t repeat_times = num_v_heads_ / num_k_heads_;
+    if (repeat_times > 1) {
+        processed_q = processed_q.repeat_interleave(repeat_times, 2);
+        processed_k = processed_k.repeat_interleave(repeat_times, 2);
+    }
+    g = g.unsqueeze(0);
+    beta = beta.unsqueeze(0);
+
+    xllm::kernel::FusedRecurrentGatedDeltaRuleParams recurrent_gated_params;
+    recurrent_gated_params.q = processed_q;
+    recurrent_gated_params.k = processed_k;
+    recurrent_gated_params.v = processed_v;
+    recurrent_gated_params.g = g;
+    recurrent_gated_params.beta = beta;
+    recurrent_gated_params.scale = 1.0f;
+    recurrent_gated_params.use_qk_l2norm_in_kernel = false;
+    recurrent_gated_params.inplace_final_state = true;
+    recurrent_gated_params.initial_state = torch::Tensor();
+    recurrent_gated_params.cu_seqlens = torch::Tensor();
+    recurrent_gated_params.num_accepted_tokens = torch::Tensor();
+    auto [core_attn_out, last_recurrent_state] = xllm::kernel::fused_recurrent_gated_delta_rule(recurrent_gated_params);
   }
   
 
