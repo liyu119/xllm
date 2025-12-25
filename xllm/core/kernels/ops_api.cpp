@@ -417,4 +417,14 @@ torch::Tensor causal_conv1d_update(CausalConv1dUpdateParams& params) {
   throw std::runtime_error("causal_conv1d_update not implemented");
 #endif
 }
+
+torch::Tensor gated_layer_norm(GatedLayerNormParams& params) {
+#if defined(USE_NPU)
+  return npu::layer_norm_fwd(
+      params.x, params.weight, params.bias, params.eps, params.z,
+      params.group_size, params.norm_before_gate, params.is_rms_norm);
+#else
+  throw std::runtime_error("layer_norm_fwd not implemented");
+#endif
+}
 }  // namespace xllm::kernel

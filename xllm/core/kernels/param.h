@@ -760,13 +760,13 @@ struct FusedRecurrentGatedDeltaRuleParams {
   torch::Tensor k;
   torch::Tensor v;
   torch::Tensor g;
-  const std::optional<torch::Tensor> beta = std::nullopt;
-  const std::optional<float> scale = std::nullopt;
-  const std::optional<torch::Tensor> initial_state = std::nullopt;
+  std::optional<torch::Tensor> beta = std::nullopt;
+  std::optional<float> scale = std::nullopt;
+  std::optional<torch::Tensor> initial_state = std::nullopt;
   bool inplace_final_state = true;
-  const std::optional<torch::Tensor> cu_seqlens = std::nullopt;
-  const std::optional<torch::Tensor> ssm_state_indices = std::nullopt;
-  const std::optional<torch::Tensor> num_accepted_tokens = std::nullopt;
+  std::optional<torch::Tensor> cu_seqlens = std::nullopt;
+  std::optional<torch::Tensor> ssm_state_indices = std::nullopt;
+  std::optional<torch::Tensor> num_accepted_tokens = std::nullopt;
   bool use_qk_l2norm_in_kernel = false;
 };
 
@@ -777,14 +777,25 @@ struct CausalConv1dUpdateParams {
   torch::Tensor weight;
   torch::Tensor bias;
   bool activation = true;
-  const std::optional<torch::Tensor> conv_seqlens = std::nullopt;
-  const std::optional<torch::Tensor> conv_state_indices = std::nullopt;
-  const std::optional<torch::Tensor> num_accepted_tokens = std::nullopt;
-  const std::optional<torch::Tensor> query_start_loc = std::nullopt;
+  std::optional<torch::Tensor> conv_seqlens = std::nullopt;
+  std::optional<torch::Tensor> conv_state_indices = std::nullopt;
+  std::optional<torch::Tensor> num_accepted_tokens = std::nullopt;
+  std::optional<torch::Tensor> query_start_loc = std::nullopt;
   int32_t max_query_len = -1;
-  const std::optional<torch::Tensor>& intermediate_conv_window = std::nullopt;
+  std::optional<torch::Tensor>& intermediate_conv_window = std::nullopt;
   int32_t pad_slot_id = -1;
   bool validate_data = false;
+};
+
+struct GatedLayerNormParams {
+  torch::Tensor& x,
+  torch::Tensor& weight,
+  torch::Tensor& bias,
+  double eps,
+  std::optional<torch::Tensor>& z = std::nullopt,
+  int64_t group_size = -1,
+  bool norm_before_gate = true,
+  bool is_rms_norm = false
 };
 
 }  // namespace xllm::kernel

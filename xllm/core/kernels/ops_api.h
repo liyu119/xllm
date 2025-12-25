@@ -67,4 +67,6 @@ std::pair<torch::Tensor, torch::Tensor> fused_recurrent_gated_delta_rule(
 
 torch::Tensor causal_conv1d_update(CausalConv1dUpdateParams& params);
 
+torch::Tensor gated_layer_norm(GatedLayerNormParams& params);
+
 }  // namespace xllm::kernel
