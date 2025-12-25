@@ -417,4 +417,49 @@ torch::Tensor causal_conv1d_update(CausalConv1dUpdateParams& params) {
   throw std::runtime_error("causal_conv1d_update not implemented");
 #endif
 }
+
+std::vector<torch::Tensor> grouped_matmul(GroupedMatmulParams& params) {
+#if defined(USE_NPU)
+  return npu::apply_npu_grouped_matmul(
+      params.x, params.weight, params.bias, params.scale, params.offset,
+      params.antiquant_scale, params.antiquant_offset, params.per_token_scale,
+      params.group_list, params.activation_input,
+      params.activation_quant_scale, params.activation_quant_offset,
+      params.split_item, params.group_type, params.group_list_type,
+      params.act_type, params.tuning_config, params.output_dtype);
+#else
+  throw std::runtime_error("grouped_matmul not implemented");
+#endif
+}
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> moe_gating_topk_softmax(
+    MoeGatingTopkSoftmaxParams& params) {
+#if defined(USE_NPU)
+  return npu::apply_moe_gating_topk_softmax(
+    params.x, params.finished, params.k
+  );
+#else
+  throw std::runtime_error("moe_gating_topk_softmax not implemented");
+#endif
+}
+
+torch::Tensor moe_token_unpermute(MoeTokenUnpermuteParams &params) {
+#if defined(USE_NPU)
+  return npu::apply_npu_moe_token_unpermute(
+    params.permuted_tokens, params.sorted_indices,
+    params.probes, params.padded_mode, params.restore_shape
+  );
+#else
+  throw std::runtime_error("moe_token_unpermute not implemented");
+#endif
+}
+
+torch::Tensor swiglu(SwigluParams &params) {
+#if defined(USE_NPU)
+  return npu::apply_npu_swiglu(params.self, params.dim);
+#else
+  throw std::runtime_error("swiglu not implemented");
+#endif
+}
+
 }  // namespace xllm::kernel

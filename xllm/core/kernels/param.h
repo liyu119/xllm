@@ -787,4 +787,44 @@ struct CausalConv1dUpdateParams {
   bool validate_data = false;
 };
 
+struct GroupedMatmulParams {
+  torch::TensorList x;
+  torch::TensorList weight;
+  const c10::optional<torch::TensorList> bias;
+  const c10::optional<torch::TensorList> scale;
+  const c10::optional<torch::TensorList> offset;
+  const c10::optional<torch::TensorList> antiquant_scale;
+  const c10::optional<torch::TensorList> antiquant_offset;
+  const c10::optional<torch::TensorList> per_token_scale;
+  const c10::optional<torch::Tensor> group_list;
+  const c10::optional<torch::TensorList> activation_input;
+  const c10::optional<torch::TensorList> activation_quant_scale;
+  const c10::optional<torch::TensorList> activation_quant_offset;
+  c10::optional<int64_t> split_item;
+  c10::optional<int64_t> group_type;
+  c10::optional<int64_t> group_list_type;
+  c10::optional<int64_t> act_type;
+  const c10::OptionalIntArrayRef tuning_config;
+  c10::optional<torch::ScalarType> output_dtype;
+};
+
+struct MoeGatingTopkSoftmaxParams {
+  torch::Tensor x;
+  const std::optional<torch::Tensor> finished;
+  int k;
+};
+
+struct MoeTokenUnpermuteParams {
+  torch::Tensor permuted_tokens;
+  torch::Tensor sorted_indices;
+  std::optional<torch::Tensor> probes;
+  bool padded_mode;
+  c10::OptionalArrayRef<c10::SymInt> restore_shape;
+};
+
+struct SwigluParams {
+  torch::Tensor self;
+  long dim;
+};
+
 }  // namespace xllm::kernel
