@@ -229,15 +229,12 @@ void Qwen3NextGatedDeltaNetImpl::load_triton_kernel(
     }
     
     if (handle.is_valid()) {
-      is_kernel_loaded_ = true;
       LOG(INFO) << "Successfully loaded triton kernel: " << kernel_name;
     } else {
-      is_kernel_loaded_ = false;
       LOG(WARNING) << "Failed to load triton kernel: " << kernel_name
                    << " from " << binary_path;
     }
   } catch (const std::exception& e) {
-    is_kernel_loaded_ = false;
     LOG(WARNING) << "Exception occurred while loading triton kernel: " << e.what();
   }
 }
@@ -305,20 +302,7 @@ Qwen3NextGatedDeltaNetImpl::Qwen3NextGatedDeltaNetImpl(const ModelArgs& args,
   // 4. RMSNorm
   norm_ = register_module("norm", RmsNormGated(head_v_dim_, args.rms_norm_eps(), options));
   
-  // Initialize kernel loading related members
-  gdn_triton_kernel_name_ = "fused_gdn_gating_head8_kernel";
-  gdn_triton_binary_filename_ = "fused_gdn_gating_head8_kernel.npubin";
 
-  conv_triton_kernel_name_ = "_causal_conv1d_update_kernel_no_cache_len_no_mtp";
-  conv_triton_binary_filename_ = "_causal_conv1d_update_kernel_no_cache_len_no_mtp.npubin";
-
-  recurrent_triton_kernel_name_ = "fused_recurrent_gated_delta_rule_fwd_kernel";
-  recurrent_triton_binary_filename_ = "fused_recurrent_gated_delta_rule_fwd_kernel.npubin";
-  
-  // Load the fused GDN gating kernel
-  load_triton_kernel(gdn_triton_kernel_name_, gdn_triton_binary_filename_);
-  load_triton_kernel(conv_triton_kernel_name_, conv_triton_binary_filename_);
-  load_triton_kernel(recurrent_triton_kernel_name_, recurrent_triton_binary_filename_);
 }
 
 torch::Tensor Qwen3NextGatedDeltaNetImpl::forward(
@@ -412,20 +396,19 @@ torch::Tensor Qwen3NextGatedDeltaNetImpl::forward(
     torch::Tensor g = -A_log_exp * softplus_out;
     g = g.to(a.dtype()).contiguous();
 
-    std::cerr << "[PREFILL] beta - Device: " << beta.device() 
-              << ", Dtype: " << beta.dtype() 
-              << ", Shape: " << beta.sizes() << std::endl;
-    std::cerr << "[PREFILL] g - Device: " << g.device() 
-              << ", Dtype: " << g.dtype() 
-              << ", Shape: " << g.sizes() << std::endl;
     // Get dimensions and process mixed_qkv tensor
     auto [processed_q, processed_k, processed_v] = process_mixed_qkv(mixed_qkv);
-  
+    
+    int64_t repeat_times = num_v_heads_ / num_k_heads_;
+    if (repeat_times > 1) {
+        processed_q = processed_q.repeat_interleave(repeat_times, 2);
+        processed_k = processed_k.repeat_interleave(repeat_times, 2);
+    }
+    g = g.unsqueeze(0);
+    beta = beta.unsqueeze(0);
     auto [core_attn_out, last_recurrent_state] = torch_chunk_gated_delta_rule(processed_q, processed_k, processed_v, g, beta);
-    // 4. output projection
-    auto attn_output = o_proj_->forward(rearrange_merge(z));
-    return attn_output; 
 
+    
   } else {
 
     std::cerr << "decode " << std::endl;
@@ -454,7 +437,7 @@ torch::Tensor Qwen3NextGatedDeltaNetImpl::forward(
     gdn_params.A_log = A_log_.to(device);
     gdn_params.a = a;
     gdn_params.b = b;
-    gdn_params.dt_bias = dt_bias_to(torch::kFloat32).to(device, /*non_blocking=*/false);
+    gdn_params.dt_bias = dt_bias_.to(torch::kFloat32).to(device);
     gdn_params.beta = 1.0f;
     gdn_params.threshold = 20.0f;
     auto [g, beta] = xllm::kernel::fused_gdn_gating(gdn_params);
@@ -485,16 +468,28 @@ torch::Tensor Qwen3NextGatedDeltaNetImpl::forward(
     recurrent_gated_params.scale = 1.0f;
     recurrent_gated_params.use_qk_l2norm_in_kernel = false;
     recurrent_gated_params.inplace_final_state = true;
-    recurrent_gated_params.initial_state = torch::Tensor();
-    recurrent_gated_params.cu_seqlens = torch::Tensor();
+    recurrent_gated_params.initial_state = torch::zeros({1,8,128,128}).to(device);
+    recurrent_gated_params.cu_seqlens = attn_metadata.query_start_loc;
+    recurrent_gated_params.ssm_state_indices = attn_metadata.block_table.slice(1,0,1)
     recurrent_gated_params.num_accepted_tokens = torch::Tensor();
     auto [core_attn_out, last_recurrent_state] = xllm::kernel::fused_recurrent_gated_delta_rule(recurrent_gated_params);
   }
   
+  // For decode branch, apply the same norm and out_proj logic as in Python implementation
+  // Reshape input data and apply norm and out_proj similar to Python implementation
+  auto z_reshaped = z.view({-1, z.size(-1)});  // reshape z to 2D
+  auto core_attn_out_reshaped = core_attn_out.view({-1, core_attn_out.size(-1)});  // reshape core_attn_out to 2D
+  
+  // Apply norm (RMSNormGated)
+  auto norm_out = norm_->forward(core_attn_out_reshaped, z_reshaped);
+  
+  // Reshape back to original shape
+  auto z_shape_og = z.sizes().vec();  // Save original z shape
+  norm_out = norm_out.view(z_shape_og);  // Reshape back to original z shape
+  norm_out = norm_out.view({norm_out.size(0), norm_out.size(1), -1});  // Further reshape
 
-
-  // 4. output projection
-  auto attn_output = o_proj_->forward(rearrange_merge(z));
+  // Apply output projection
+  auto attn_output = o_proj_->forward(rearrange_merge(norm_out));
   return attn_output; 
 }
 
@@ -602,9 +597,21 @@ Qwen3NextGatedDeltaNetImpl::process_ba_tensor(const torch::Tensor& ba) {
 }
 
 void Qwen3NextGatedDeltaNetImpl::load_state_dict(const StateDict& state_dict) {
-  if (!is_kernel_loaded_) {
-    load_fused_gdn_gating_kernel();
-  }
+
+  gdn_triton_kernel_name_ = "fused_gdn_gating_head8_kernel";
+  gdn_triton_binary_filename_ = "fused_gdn_gating_head8_kernel.npubin";
+
+  conv_triton_kernel_name_ = "_causal_conv1d_update_kernel_no_cache_len_no_mtp";
+  conv_triton_binary_filename_ = "_causal_conv1d_update_kernel_no_cache_len_no_mtp.npubin";
+
+  recurrent_triton_kernel_name_ = "fused_recurrent_gated_delta_rule_fwd_kernel";
+  recurrent_triton_binary_filename_ = "fused_recurrent_gated_delta_rule_fwd_kernel.npubin";
+  
+  // Load the fused GDN gating kernel
+  load_triton_kernel(gdn_triton_kernel_name_, gdn_triton_binary_filename_);
+  load_triton_kernel(conv_triton_kernel_name_, conv_triton_binary_filename_);
+  load_triton_kernel(recurrent_triton_kernel_name_, recurrent_triton_binary_filename_);
+  
   
   qkvz_proj_->load_state_dict(state_dict.get_dict_with_prefix("in_proj_qkvz."));
   ba_proj_->load_state_dict(state_dict.get_dict_with_prefix("in_proj_ba."));
