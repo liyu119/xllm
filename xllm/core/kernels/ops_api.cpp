@@ -19,6 +19,8 @@ limitations under the License.
 #include "mlu/mlu_ops_api.h"
 #elif defined(USE_CUDA)
 #include "cuda/cuda_ops_api.h"
+#elif defined(USE_NPU)
+#include "npu/npu_ops_api.h"
 #endif
 #include <glog/logging.h>
 
@@ -459,6 +461,21 @@ torch::Tensor swiglu(SwigluParams &params) {
   return npu::apply_npu_swiglu(params.self, params.dim);
 #else
   throw std::runtime_error("swiglu not implemented");
+#endif
+}
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> moe_init_routing_v2(
+    MoeInitRoutingV2Params &params) {
+#if defined(USE_NPU)
+  return npu::apply_npu_moe_init_routing_v2(
+    params.x, params.expert_idx, params.scale,
+    params.offset, params.active_num, params.expert_capacity,
+    params.expert_num, params.drop_pad_mode, params.expert_tokens_num_type,
+    params.expert_tokens_num_flag, params.quant_mode, params.active_expert_range,
+    params.row_idx_type, params.restore_shape
+  );
+#else
+  throw std::runtime_error("moe_init_routing_v2 not implemented");
 #endif
 }
 

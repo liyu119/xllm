@@ -18,7 +18,6 @@ limitations under the License.
 
 #include <optional>
 
-#include "./custom_functions_npu/AtbCommon.h"
 #include "./torch_api/triton_ops_api.h"
 
 namespace xllm::kernel::npu {
@@ -107,21 +106,36 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> apply_moe_gating_topk_so
 
 std::vector<torch::Tensor> apply_npu_grouped_matmul(const torch::TensorList x,
                                                     const torch::TensorList weight,
-                                                    const c10::optional<torch::TensorList> bias,
-                                                    const c10::optional<torch::TensorList> scale,
-                                                    const c10::optional<torch::TensorList> offset,
-                                                    const c10::optional<torch::TensorList> antiquant_scale,
-                                                    const c10::optional<torch::TensorList> antiquant_offset,
-                                                    const c10::optional<torch::TensorList> per_token_scale,
-                                                    const c10::optional<torch::Tensor>& group_list,
-                                                    const c10::optional<torch::TensorList> activation_input,
-                                                    const c10::optional<torch::TensorList> activation_quant_scale,
-                                                    const c10::optional<torch::TensorList> activation_quant_offset,
-                                                    c10::optional<int64_t> split_item,
-                                                    c10::optional<int64_t> group_type,
-                                                    c10::optional<int64_t> group_list_type,
-                                                    c10::optional<int64_t> act_type,
+                                                    const std::optional<torch::TensorList> bias,
+                                                    const std::optional<torch::TensorList> scale,
+                                                    const std::optional<torch::TensorList> offset,
+                                                    const std::optional<torch::TensorList> antiquant_scale,
+                                                    const std::optional<torch::TensorList> antiquant_offset,
+                                                    const std::optional<torch::TensorList> per_token_scale,
+                                                    const std::optional<torch::Tensor>& group_list,
+                                                    const std::optional<torch::TensorList> activation_input,
+                                                    const std::optional<torch::TensorList> activation_quant_scale,
+                                                    const std::optional<torch::TensorList> activation_quant_offset,
+                                                    std::optional<int64_t> split_item,
+                                                    std::optional<int64_t> group_type,
+                                                    std::optional<int64_t> group_list_type,
+                                                    std::optional<int64_t> act_type,
                                                     const c10::OptionalIntArrayRef tuning_config,
-                                                    c10::optional<torch::ScalarType> output_dtype);
+                                                    std::optional<torch::ScalarType> output_dtype);
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> apply_npu_moe_init_routing_v2(const torch::Tensor& x,
+                                                               const torch::Tensor& expert_idx,
+                                                               const std::optional<torch::Tensor>& scale,
+                                                               const std::optional<torch::Tensor>& offset,
+                                                               int active_num,
+                                                               int expert_capacity,
+                                                               int expert_num,
+                                                               int drop_pad_mode,
+                                                               int expert_tokens_num_type,
+                                                               bool expert_tokens_num_flag,
+                                                               int quant_mode,
+                                                               torch::IntArrayRef active_expert_range,
+                                                               int row_idx_type,
+                                                               c10::OptionalArrayRef<c10::SymInt> restore_shape);
 
 }  // namespace xllm::kernel::npu

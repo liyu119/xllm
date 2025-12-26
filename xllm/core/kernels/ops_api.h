@@ -76,4 +76,7 @@ torch::Tensor moe_token_unpermute(MoeTokenUnpermuteParams &params);
 
 torch::Tensor swiglu(SwigluParams &params);
 
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> moe_init_routing_v2(
+    MoeInitRoutingV2Params &params);
+
 }  // namespace xllm::kernel
