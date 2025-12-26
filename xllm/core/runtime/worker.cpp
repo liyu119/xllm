@@ -51,6 +51,11 @@ Worker::Worker(const ParallelArgs& parallel_args,
     impl_ = new EmbedWorkerImpl(parallel_args, device, options);
   } else if (worker_type == WorkerType::EVLM) {
     impl_ = new EmbedVLMWorkerImpl(parallel_args, device, options);
+  } else if (worker_type == WorkerType::REC) {
+    // TODO. add following when next pr (use RecWorkerImpl).
+    // impl_ = new RecWorkerImpl(parallel_args, device, options);
+    // TODO. delete this when next pr.
+    impl_ = new LLMWorkerImpl(parallel_args, device, options);
   } else {
     LOG(ERROR) << "Unknown worker type, please check logic";
   }
@@ -58,8 +63,9 @@ Worker::Worker(const ParallelArgs& parallel_args,
 
 Worker::~Worker() { delete impl_; }
 
-bool Worker::init_model(const std::string& model_weights_path) {
-  return impl_->init_model(model_weights_path);
+bool Worker::init_model(const std::string& model_weights_path,
+                        int32_t random_seed) {
+  return impl_->init_model(model_weights_path, random_seed);
 }
 
 bool Worker::allocate_kv_cache(
@@ -127,8 +133,9 @@ folly::SemiFuture<folly::Unit> Worker::process_group_test_async() {
 
 // initialize model, cache manager. async call
 folly::SemiFuture<bool> Worker::init_model_async(
-    const std::string& model_weights_path) {
-  return impl_->init_model_async(model_weights_path);
+    const std::string& model_weights_path,
+    int32_t random_seed) {
+  return impl_->init_model_async(model_weights_path, random_seed);
 }
 
 folly::SemiFuture<bool> Worker::allocate_kv_cache_async(
@@ -164,19 +171,15 @@ folly::SemiFuture<bool> Worker::pull_kv_blocks_async(
 }
 
 uint32_t Worker::transfer_kv_blocks(
-    const std::vector<BlockTransferInfo>& block_transfer_info) {
-  return impl_->transfer_kv_blocks(block_transfer_info);
-}
-
-void Worker::transfer_kv_blocks(
     const uint64_t batch_id,
     const std::vector<BlockTransferInfo>& block_transfer_info) {
-  impl_->transfer_kv_blocks(batch_id, std::move(block_transfer_info));
+  return impl_->transfer_kv_blocks(batch_id, std::move(block_transfer_info));
 }
 
-uint32_t Worker::prefetch_from_storage(
+uint32_t Worker::transfer_kv_blocks(
+    const uint64_t batch_id,
     Slice<BlockTransferInfo>& block_transfer_info) {
-  return impl_->prefetch_from_storage(block_transfer_info);
+  return impl_->transfer_kv_blocks(batch_id, block_transfer_info);
 }
 
 const torch::Device& Worker::device() const { return impl_->device(); }

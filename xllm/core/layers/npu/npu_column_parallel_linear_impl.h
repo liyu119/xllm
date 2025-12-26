@@ -31,6 +31,7 @@ limitations under the License.
 #include "framework/model/model_input_params.h"
 #include "framework/model_context.h"
 #include "framework/state_dict/state_dict.h"
+#include "loader/column_parallel_linear_loader.h"
 #include "nlohmann/json.hpp"
 #include "npu_base_layer.h"
 #include "pytorch/adapter/utils/utils.h"
@@ -45,15 +46,11 @@ namespace layer {
 // Linear layer with column parallelism.
 // The linear layer is defined as Y = XA + b. A is parallelized along
 // its second dimension as A = [A_1, ..., A_p].
-class NpuColumnParallelLinearImpl : public NpuBaseLayer {
+class ColumnParallelLinearImpl : public BaseLayer {
  public:
-  NpuColumnParallelLinearImpl(const ModelContext& context);
+  ColumnParallelLinearImpl(const ModelContext& context);
 
-  ~NpuColumnParallelLinearImpl() {};
-
-  virtual void load_state_dict(const StateDict& state_dict) override;
-
-  void verify_loaded_weights(const std::string weight_str) const;
+  ~ColumnParallelLinearImpl() {};
 
   virtual void merge_loaded_weights() override;
 
@@ -82,6 +79,7 @@ class NpuColumnParallelLinearImpl : public NpuBaseLayer {
 
   atb_speed::common::LinearParallelParam linear_param_;
 };
+TORCH_MODULE(ColumnParallelLinear);
 
 }  // namespace layer
 }  // namespace xllm

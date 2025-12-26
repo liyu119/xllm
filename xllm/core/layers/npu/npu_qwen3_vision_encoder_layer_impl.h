@@ -35,6 +35,7 @@ limitations under the License.
 #include "core/framework/model/model_args.h"
 #include "core/framework/model/model_input_params.h"
 #include "core/framework/state_dict/state_dict.h"
+#include "loader/qwen3_vision_encoder_loader.h"
 #include "nlohmann/json.hpp"
 #include "npu_base_layer.h"
 #include "pytorch/adapter/utils/utils.h"
@@ -43,15 +44,15 @@ limitations under the License.
 namespace xllm {
 namespace layer {
 
-class NpuQwen3VisionEncoderLayerImpl : public NpuBaseLayer {
+class Qwen3VisionEncoderLayerImpl : public BaseLayer {
  public:
-  explicit NpuQwen3VisionEncoderLayerImpl(const ModelContext& context);
+  explicit Qwen3VisionEncoderLayerImpl(const ModelContext& context);
 
-  ~NpuQwen3VisionEncoderLayerImpl() {};
+  ~Qwen3VisionEncoderLayerImpl() {};
 
-  void load_state_dict(const StateDict& state_dict) override;
+  // void load_state_dict(const StateDict& state_dict) override;
 
-  void verify_loaded_weights() const override;
+  // void verify_loaded_weights() const override;
 
   void merge_loaded_weights() override;
 

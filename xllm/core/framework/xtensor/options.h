@@ -35,6 +35,10 @@ struct Options {
 
   // key or value cache size in bytes per token
   PROPERTY(int64_t, cache_size_per_token) = 0;
+
+  // Index ID for internal server ID, which must be set different values
+  // if the model supports multiple version or there are multiple models.
+  PROPERTY(int64_t, server_idx) = 0;
 };
 }  // namespace xtensor
 }  // namespace xllm

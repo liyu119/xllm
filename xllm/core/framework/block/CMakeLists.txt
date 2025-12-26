@@ -11,11 +11,13 @@ cc_library(
     block_manager_pool.h
     block_manager_impl.h
     concurrent_block_manager_impl.h
+    hierarchy_block_manager_pool.h
   SRCS 
     block.cpp
     block_manager_pool.cpp
     concurrent_block_manager_impl.cpp
     block_manager_impl.cpp
+    hierarchy_block_manager_pool.cpp
   DEPS
     $<$<BOOL:${USE_NPU}>:torch_npu>
     $<$<BOOL:${USE_NPU}>:graph>
@@ -48,6 +50,6 @@ if(USE_NPU)
       GTest::gtest_main
   )
 
-  target_link_libraries(block_test PRIVATE brpc OpenSSL::SSL OpenSSL::Crypto ascendcl Folly::folly)
+  target_link_libraries(block_test PRIVATE OpenSSL::SSL OpenSSL::Crypto protobuf::libprotobuf)
   add_dependencies(block_test brpc-static)
 endif()

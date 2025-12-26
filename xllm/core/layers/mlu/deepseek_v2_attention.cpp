@@ -56,7 +56,7 @@ DeepseekV2AttentionImpl::DeepseekV2AttentionImpl(
         ReplicatedLinear(
             hidden_size, q_lora_rank_, false, QuantArgs(), options));
     q_a_layernorm_ = register_module(
-        "q_a_layernorm", RmsNorm(q_lora_rank_, args.rms_norm_eps(), options));
+        "q_a_layernorm", RMSNorm(q_lora_rank_, args.rms_norm_eps(), options));
     q_b_proj_ = register_module("q_b_proj",
                                 ColumnParallelLinear(q_lora_rank_,
                                                      num_heads * qk_head_dim_,
@@ -84,7 +84,7 @@ DeepseekV2AttentionImpl::DeepseekV2AttentionImpl(
                                        QuantArgs(),
                                        options));
   kv_a_layernorm_ = register_module(
-      "kv_a_layernorm", RmsNorm(kv_lora_rank_, args.rms_norm_eps(), options));
+      "kv_a_layernorm", RMSNorm(kv_lora_rank_, args.rms_norm_eps(), options));
   kv_b_proj_ = register_module(
       "kv_b_proj",
       ColumnParallelLinear(kv_lora_rank_,
@@ -120,8 +120,8 @@ DeepseekV2AttentionImpl::DeepseekV2AttentionImpl(
                           options));
 
   if (args.rope_scaling_rope_type() == "deepseek_yarn") {
-    float mscale = rotary::yarn_get_mscale(args.rope_scaling_factor(),
-                                           args.rope_scaling_mscale_all_dim());
+    float mscale = layer::rotary::yarn_get_mscale(
+        args.rope_scaling_factor(), args.rope_scaling_mscale_all_dim());
     scaling *= mscale * mscale;
   }
 
@@ -176,7 +176,7 @@ torch::Tensor DeepseekV2AttentionImpl::forward(
   // get q, qr
   if (q_lora_rank_ > 0) {
     auto q_a = q_a_proj_(hidden_states);
-    q_a = q_a_layernorm_(q_a);
+    q_a = std::get<0>(q_a_layernorm_(q_a));
     qr = q_a;
     q = q_b_proj_(q_a).view({-1, num_local_heads_, qk_head_dim_});
   } else {
@@ -197,7 +197,7 @@ torch::Tensor DeepseekV2AttentionImpl::forward(
   auto v_input = latent_cache.slice(-1, 0, kv_lora_rank_);
   auto k_input = latent_cache;
   auto k_input_slice = k_input.slice(-1, 0, kv_lora_rank_);
-  kv_a_layernorm_->forward_output(v_input, k_input_slice);
+  k_input_slice = std::get<0>(kv_a_layernorm_(k_input_slice));
   k_input = k_input.unsqueeze(1);
   auto k_pe = k_input.slice(-1, kv_lora_rank_);
 
@@ -205,7 +205,7 @@ torch::Tensor DeepseekV2AttentionImpl::forward(
   rotary_emb_(q_pe,
               k_pe,
               positions,
-              attn_metadata.query_start_loc,
+              attn_metadata.q_cu_seq_lens,
               attn_metadata.max_query_len,
               attn_metadata.is_prefill);
   q_input.slice(-1, kv_lora_rank_) = q_pe;

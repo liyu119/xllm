@@ -15,11 +15,6 @@ limitations under the License.
 
 #pragma once
 
-#if defined(USE_NPU)
-#include <atb/atb_infer.h>
-
-#include "xllm_kernels/core/include/atb_speed/log.h"
-#endif
 #include <c10/core/ScalarType.h>
 #include <glog/logging.h>
 #include <torch/torch.h>
@@ -30,7 +25,6 @@ limitations under the License.
 #include "core/framework/model/model_input_params.h"
 #include "core/layers/lm_head.h"
 #include "core/layers/qwen3_vision_encode_layer.h"
-#include "core/layers/rms_norm.h"
 #include "models/llm/qwen3.h"
 #include "models/model_registry.h"
 #include "processors/input_processor.h"
@@ -126,13 +120,6 @@ class Qwen3_VisionBlockImpl : public torch::nn::Module {
     // call each submodule's load_state_dict function
     encoder_layer_->load_state_dict(state_dict);
   }
-
-#if defined(USE_NPU)
-  void verify_loaded_weights(const std::string& prefix) const {
-    encoder_layer_->verify_loaded_weights();
-  }
-  void merge_loaded_weights() { encoder_layer_->merge_loaded_weights(); }
-#endif
 
  private:
   layer::Qwen3VisionEncoderLayer encoder_layer_{nullptr};
@@ -512,11 +499,6 @@ class Qwen3_VisionTransformerImpl : public torch::nn::Module {
     cu_seqlens = F::pad(
         cu_seqlens, F::PadFuncOptions({1, 0}).mode(torch::kConstant).value(0));
 
-#if defined(USE_NPU)
-    // transformers
-    cu_seqlens = torch::diff(cu_seqlens);
-#endif
-
     m_cos = rotary_pos_emb.cos().type_as(hidden_states);
     m_cos = m_cos.repeat({1, 2});
     m_sin = rotary_pos_emb.sin().type_as(hidden_states);
@@ -578,30 +560,6 @@ class Qwen3_VisionTransformerImpl : public torch::nn::Module {
       is_emb_weight_loaded = true;
     }
   }
-
-#if defined(USE_NPU)
-  void verify_loaded_weights(const std::string& prefix) const {
-    patch_embed_->verify_loaded_weights(prefix + "patch_embed.");
-    for (int idx = 0; idx < blocks_->size(); ++idx) {
-      layers_[idx]->verify_loaded_weights(prefix + "blocks." +
-                                          std::to_string(idx) + ".");
-    }
-    merger_->verify_loaded_weights(prefix + "merger.");
-
-    for (int idx = 0; idx < deepstack_merger_layers_.size(); ++idx) {
-      deepstack_merger_layers_[idx]->verify_loaded_weights(
-          "deepstack_merger_list." + std::to_string(idx) + ".");
-    }
-    CHECK(is_emb_weight_loaded)
-        << "weight is not loaded for " << prefix + "" + ".bias";
-  }
-
-  void merge_loaded_weights() {
-    for (int idx = 0; idx < layers_.size(); ++idx) {
-      layers_[idx]->merge_loaded_weights();
-    }
-  }
-#endif
 
  private:
   int hidden_size_ = 0;
@@ -713,11 +671,6 @@ class Qwen3_VLForConditionalGenerationImpl : public torch::nn::Module {
           state_dict->get_dict_with_prefix("model.visual."));
     }
 
-#if defined(USE_NPU)
-    // verify
-    visual_->verify_loaded_weights("model.visual.");
-    visual_->merge_loaded_weights();
-#endif
     if (!model_args_.image_embedding_mode()) {
       language_model_->load_model(std::move(loader), "model.language_model.");
     }

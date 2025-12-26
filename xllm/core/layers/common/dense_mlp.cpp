@@ -18,6 +18,7 @@ limitations under the License.
 #include <glog/logging.h>
 
 #include "kernels/ops_api.h"
+#include "platform/device.h"
 
 namespace xllm {
 namespace layer {
@@ -69,6 +70,8 @@ DenseMLPImpl::DenseMLPImpl(int64_t hidden_size,
                                            options,
                                            gate_up_proj_extra_args));
 
+  act_ = register_module("act", Activation(hidden_act_, is_gated_));
+
   // 2. down
   down_proj_ = register_module("down_proj",
                                RowParallelLinear(intermediate_size_,
@@ -90,19 +93,16 @@ torch::Tensor DenseMLPImpl::forward(const torch::Tensor& hidden_states) {
     // For w8a8 quantization, the active operation is fused with the down_proj
     return down_proj_->forward(gate_up);
   } else {
-    int64_t batch_size = gate_up.sizes()[0];
-    auto output = torch::empty(
-        {batch_size,
-         intermediate_size_ / parallel_args_.tp_group_->world_size()},
-        gate_up.options());
+    torch::Tensor output;
+    if (Device::type_str() != "npu") {
+      int64_t batch_size = gate_up.sizes()[0];
+      output = torch::empty(
+          {batch_size,
+           intermediate_size_ / parallel_args_.tp_group_->world_size()},
+          gate_up.options());
+    }
 
-    xllm::kernel::ActivationParams activation_params;
-    activation_params.input = gate_up;
-    activation_params.output = output;
-    activation_params.act_mode = hidden_act_;
-    activation_params.is_gated = is_gated_;
-    xllm::kernel::active(activation_params);
-
+    act_->forward(gate_up, output);
     return down_proj_->forward(output);
   }
 }

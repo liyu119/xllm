@@ -22,71 +22,63 @@ DECLARE_string(communication_backend);
 namespace xllm {
 namespace layer {
 
-void NpuWordEmbeddingImpl::param_from_args(
+void WordEmbeddingImpl::param_from_args(
     atb_speed::common::WordEmbeddingParam& param,
     const xllm::ModelArgs& args,
     const xllm::ParallelArgs& parallel_args) {
   param.unpadInputs = true;
-  if (dp_size_ > 1) {
-    param.tensorParallelInfo.rank = dp_local_tp_rank_;
-    param.tensorParallelInfo.worldSize = dp_local_tp_size_;
-    param.tensorParallelInfo.backend = FLAGS_communication_backend;
-  } else if (parallel_args.world_size() != 1) {
-    // param.tensorParallelInfo = {parallel_args.rank(),
-    // parallel_args.world_size(), "lccl"};
-    param.tensorParallelInfo = {parallel_args.rank(),
-                                parallel_args.world_size(),
-                                FLAGS_communication_backend};
+
+  if (parallel_args.world_size() > 1) {
+    if (parallel_args.mapping_data().empty()) {
+      if (dp_size_ > 1) {
+        param.tensorParallelInfo.rank = dp_local_tp_rank_;
+        param.tensorParallelInfo.worldSize = dp_local_tp_size_;
+      } else {
+        param.tensorParallelInfo.rank = parallel_args.rank();
+        param.tensorParallelInfo.worldSize = parallel_args.world_size();
+      }
+      param.tensorParallelInfo.commDomain = std::to_string(dp_rank_);
+      param.tensorParallelInfo.backend = FLAGS_communication_backend;
+    } else {
+      atb_speed::common::ParallelInfo parallelInfo =
+          parallel_args.mapping().Get(atb_speed::base::ATTN_TP);
+      param.tensorParallelInfo.rank = parallelInfo.rank;
+      param.tensorParallelInfo.worldSize = parallelInfo.rankIds.size();
+      param.tensorParallelInfo.backend = FLAGS_communication_backend;
+      parallelInfo.InitCommDomain(param.tensorParallelInfo.hcommInfo,
+                                  param.tensorParallelInfo.commDomain);
+    }
   }
-  // param.linearParallelParam.tensorParallelInfo.backend =
-  // FLAGS_communication_backend;
-  param.tensorParallelInfo.commDomain = std::to_string(dp_rank_);
-  // param.tensorParallelInfo.rankTableFile = FLAGS_rank_tablefile;
 }
 
-NpuWordEmbeddingImpl::NpuWordEmbeddingImpl(const ModelContext& context)
-    : NpuBaseLayer(context) {
+WordEmbeddingImpl::WordEmbeddingImpl(const ModelContext& context)
+    : BaseLayer(context) {
   auto model_args = context.get_model_args();
   auto parallel_args = context.get_parallel_args();
   auto options = context.get_tensor_options();
 
   param_from_args(embedding_param_, model_args, parallel_args);
-  at_weight_tensors_.resize(1);
   atb_weight_tensors_.resize(1);
   atOutTensors_.resize(1);
   dtype_ = c10::typeMetaToScalarType(options.dtype());
-  at_weight_tensors_[0] = torch::zeros({1}).to(options);
+  loader_ = std::make_unique<WordEmbeddingLoader>(1, context);
 }
 
-void NpuWordEmbeddingImpl::verify_loaded_weights(
-    const std::string weight_str) const {
-  CHECK(at_weight_tensors_[0].sizes() != std::vector<int64_t>({1}))
-      << "weight is not loaded for " << weight_str;
-}
-
-void NpuWordEmbeddingImpl::merge_loaded_weights() {
+void WordEmbeddingImpl::merge_loaded_weights() {
+  auto& at_weight_tensors = loader_->get_at_weight_tensors();
   atb_weight_tensors_[0] =
-      atb_speed::Utils::AtTensor2Tensor(at_weight_tensors_[0]);
+      atb_speed::Utils::AtTensor2Tensor(at_weight_tensors[0]);
   init_layer();
 }
 
-void NpuWordEmbeddingImpl::load_state_dict(const StateDict& state_dict) {
-  if (dp_size_ > 1) {
-    set_weight(
-        state_dict, "weight", 0, 1, dp_local_tp_rank_, dp_local_tp_size_);
-  } else {
-    set_weight(state_dict, "weight", 0, 1);
-  }
-}
-
-int64_t NpuWordEmbeddingImpl::init_layer() {
-  NpuBaseLayer::name_ = "word_embedding_layer";
+int64_t WordEmbeddingImpl::init_layer() {
+  BaseLayer::name_ = "word_embedding_layer";
   modelName_ = "llm";
   CHECK_OPERATION_STATUS_RETURN(init_node(embedding_node_, embedding_param_));
   return atb::NO_ERROR;
 }
 
-int64_t NpuWordEmbeddingImpl::init_node(
+int64_t WordEmbeddingImpl::init_node(
     atb_speed::Model::Node& node,
     atb_speed::common::WordEmbeddingParam& param) {
   atb::Operation* operation = nullptr;
@@ -113,8 +105,7 @@ int64_t NpuWordEmbeddingImpl::init_node(
   return atb::NO_ERROR;
 }
 
-torch::Tensor NpuWordEmbeddingImpl::forward(const torch::Tensor& x,
-                                            int nodeId) {
+torch::Tensor WordEmbeddingImpl::forward(const torch::Tensor& x, int nodeId) {
   atb::Status st;
   // std::cout<<"x:"<<x<<std::endl;
   build_node_variant_pack(embedding_node_, x);
@@ -124,8 +115,8 @@ torch::Tensor NpuWordEmbeddingImpl::forward(const torch::Tensor& x,
   return atOutTensors_.at(0);
 }
 
-void NpuWordEmbeddingImpl::build_node_variant_pack(atb_speed::Model::Node& node,
-                                                   const torch::Tensor& x) {
+void WordEmbeddingImpl::build_node_variant_pack(atb_speed::Model::Node& node,
+                                                const torch::Tensor& x) {
   internalTensors = atb_speed::Utils::AtTensor2Tensor(x);
   // node.outTensors[0] = &internalTensors;
 

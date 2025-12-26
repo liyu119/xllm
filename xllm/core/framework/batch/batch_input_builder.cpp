@@ -207,7 +207,7 @@ void BatchInputBuilder::process_sequences_multithreaded() {
     state_.q_seq_lens.insert(state_.q_seq_lens.end(),
                              state.q_seq_lens.begin(),
                              state.q_seq_lens.end());
-#elif defined(USE_MLU) || defined(USE_CUDA)
+#elif defined(USE_MLU) || defined(USE_CUDA) || defined(USE_ILU)
     int32_t seq_len_offset = state_.seq_lens.back();
     // skip the first element which is 0
     for (size_t i = 1; i < state.seq_lens.size(); ++i) {
@@ -293,7 +293,7 @@ void BatchInputBuilder::process_single_sequence(
 #if defined(USE_NPU)
   state.seq_lens.push_back(seq_len + offset);
   state.q_seq_lens.push_back(q_seq_len);
-#elif defined(USE_MLU) || defined(USE_CUDA)
+#elif defined(USE_MLU) || defined(USE_CUDA) || defined(USE_ILU)
   state.seq_lens.push_back(state.seq_lens.back() + seq_len + offset);
   state.q_seq_lens.push_back(state.q_seq_lens.back() + q_seq_len);
 #endif
@@ -527,7 +527,7 @@ void BatchInputBuilder::padding_decode_batch_size(
 #if defined(USE_NPU)
         state_.seq_lens.push_back(num_decoding_tokens);
         state_.q_seq_lens.push_back(num_decoding_tokens);
-#elif defined(USE_MLU) || defined(USE_CUDA)
+#elif defined(USE_MLU) || defined(USE_CUDA) || defined(USE_ILU)
         state_.seq_lens.push_back(state_.seq_lens.back() + num_decoding_tokens);
         state_.q_seq_lens.push_back(state_.q_seq_lens.back() +
                                     num_decoding_tokens);
@@ -581,7 +581,7 @@ ForwardInput BatchInputBuilder::state_to_forward_input() {
       torch::tensor(state_.paged_kv_last_page_len, torch::kInt);
 
   // Setup multimodal data
-  input_params.mm_data = MMData::batch(mm_data_vec_);
+  input_params.mm_data.batch(mm_data_vec_);
 
   // Setup block tables
   util::pad_2d_vector(state_.block_tables_vec, /*pad_value=*/0);
@@ -683,7 +683,7 @@ RawForwardInput BatchInputBuilder::state_to_raw_forward_input() {
     raw_forward_input.kv_cache_start_offsets =
         std::move(state_.kv_cache_start_offsets);
   }
-  raw_forward_input.mm_data = MMData::batch(mm_data_vec_);
+  raw_forward_input.mm_data.batch(mm_data_vec_);
 
   process_swap_block_infos(raw_forward_input);
   raw_forward_input.batch_id = batch_id_;

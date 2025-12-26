@@ -83,11 +83,11 @@ DECLARE_string(rank_tablefile);
 
 DECLARE_bool(enable_mla);
 
-DECLARE_bool(enable_acl_graph);
-
 DECLARE_int32(max_seq_len_for_graph_mode);
 
-DECLARE_bool(enable_acl_graph_no_padding);
+DECLARE_bool(enable_graph);
+
+DECLARE_bool(enable_graph_no_padding);
 
 DECLARE_bool(enable_chunked_prefill);
 
@@ -153,6 +153,12 @@ DECLARE_bool(use_zero_evict);
 
 DECLARE_int32(max_decode_token_per_sequence);
 
+DECLARE_uint32(prefetch_timeout);
+
+DECLARE_uint32(prefetch_bacth_size);
+
+DECLARE_uint32(layers_wise_copy_batchs);
+
 DECLARE_string(priority_strategy);
 
 DECLARE_bool(enable_online_preempt_offline);
@@ -180,6 +186,8 @@ DECLARE_bool(enable_profile_token_budget);
 DECLARE_bool(enable_latency_aware_schedule);
 
 DECLARE_int32(profile_max_prompt_length);
+
+DECLARE_int32(request_queue_size);
 
 DECLARE_bool(enable_profile_kv_blocks);
 
@@ -214,6 +222,8 @@ DECLARE_bool(enable_prefetch_weight);
 DECLARE_int32(flashinfer_workspace_buffer_size);
 
 DECLARE_bool(enable_dp_balance);
+
+DECLARE_int32(random_seed);
 
 DECLARE_string(dit_cache_policy);
 

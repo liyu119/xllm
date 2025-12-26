@@ -17,16 +17,17 @@ limitations under the License.
 #include <torch/torch.h>
 
 #include <optional>
+#include <tuple>
 
-#include "./custom_functions_npu/AtbCommon.h"
-#include "./torch_api/triton_ops_api.h"
+#include "custom_functions_npu/atb_common.h"
+#include "/torch_api/triton_ops_api.h"
 
 namespace xllm::kernel::npu {
 
 void reshape_paged_cache(torch::Tensor& key,
-                         torch::Tensor& value,
+                         std::optional<torch::Tensor>& value,
                          torch::Tensor& k_cache,
-                         torch::Tensor& v_cache,
+                         std::optional<torch::Tensor>& v_cache,
                          const torch::Tensor& slot_mapping);
 
 void batch_prefill(const torch::Tensor& query,
@@ -51,44 +52,19 @@ torch::Tensor matmul(const torch::Tensor& a,
 
 torch::Tensor active(const torch::Tensor& input, const std::string& act_mode);
 
-torch::Tensor fused_layernorm(const torch::Tensor& input,
-                              const torch::Tensor& weight,
-                              double eps,
-                              const std::string& mode);
+torch::Tensor rms_norm(const torch::Tensor& input,
+                       const torch::Tensor& weight,
+                       double eps,
+                       const std::string& mode);
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> add_rms_norm(
+    const torch::Tensor& x1,
+    const torch::Tensor& x2,
+    const torch::Tensor& gamma,
+    double epsilon);
 
 void apply_rotary(torch::Tensor& q,
                   torch::Tensor& k,
                   const torch::Tensor& cos_sin_cache,
                   const torch::Tensor& positions);
-
-torch::Tensor fused_moe(const torch::Tensor& hidden_states,
-                        const torch::Tensor& gating_output,
-                        const torch::Tensor& w1,
-                        const torch::Tensor& w2,
-                        const std::optional<torch::Tensor>& bias1,
-                        const std::optional<torch::Tensor>& bias2,
-                        const std::optional<torch::Tensor>& residual,
-                        const std::optional<torch::Tensor>& input_smooth,
-                        const std::optional<torch::Tensor>& act_smooth,
-                        const std::optional<torch::Tensor>& w1_scale,
-                        const std::optional<torch::Tensor>& w2_scale,
-                        const std::optional<torch::Tensor>& e_score_correction_bias,
-                        int topk,
-                        bool renormalize,
-                        bool gated,
-                        const std::string& act_mode,
-                        const std::string& scoring_func,
-                        int num_expert_group,
-                        int topk_group,
-                        double route_scale,
-                        int start_expert_id,
-                        int block_n,
-                        bool avg_moe,
-                        const std::optional<torch::Tensor>& class_reduce_weight,
-                        const std::optional<torch::Tensor>& class_expert_id,
-                        const std::optional<torch::List<int64_t>>& w1_quant_flag,
-                        const std::optional<torch::List<int64_t>>& w2_quant_flag,
-                        int world_size,
-                        int shared_expert_num,
-                        const std::string& parallel_mode);
 }  // namespace xllm::kernel::npu

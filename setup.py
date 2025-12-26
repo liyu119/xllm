@@ -39,6 +39,12 @@ def get_device_type():
         return "cuda"
 
     try:
+        import ixformer
+        return "ilu"
+    except ImportError:
+        pass
+
+    try:
         import torch_mlu
         if torch.mlu.is_available():
             return "mlu"
@@ -143,6 +149,14 @@ def get_torch_mlu_root_path():
     except ImportError:
         return None
 
+def get_ixformer_root_path():
+    try:
+        import ixformer
+        import os
+        return os.path.dirname(os.path.abspath(ixformer.__file__))
+    except ImportError:
+        return None
+
 def get_nccl_root_path():
     try:
         from nvidia import nccl
@@ -173,6 +187,7 @@ def set_npu_envs():
         NPU_TOOLKIT_HOME+"/lib64/plugin/opskernel" + ":" + \
         NPU_TOOLKIT_HOME+"/lib64/plugin/nnengine" + ":" + \
         NPU_TOOLKIT_HOME+"/opp/built-in/op_impl/ai_core/tbe/op_tiling/lib/linux/"+arch + ":" + \
+        NPU_TOOLKIT_HOME+"/opp/vendors/xllm/op_api/lib" + ":" + \
         NPU_TOOLKIT_HOME+"/tools/aml/lib64" + ":" + \
         NPU_TOOLKIT_HOME+"/tools/aml/lib64/plugin" + ":" + \
         LD_LIBRARY_PATH
@@ -253,7 +268,14 @@ def set_cuda_envs():
     os.environ["LIBTORCH_ROOT"] = get_torch_root_path()
     os.environ["PYTORCH_INSTALL_PATH"] = get_torch_root_path()
     os.environ["CUDA_TOOLKIT_ROOT_DIR"] = "/usr/local/cuda"
-    
+
+def set_ilu_envs():
+    os.environ["PYTHON_INCLUDE_PATH"] = get_python_include_path()
+    os.environ["PYTHON_LIB_PATH"] =  get_torch_root_path()
+    os.environ["LIBTORCH_ROOT"] = get_torch_root_path()
+    os.environ["PYTORCH_INSTALL_PATH"] = get_torch_root_path()
+    os.environ["IXFORMER_INSTALL_PATH"] = get_ixformer_root_path()
+        
 class CMakeExtension(Extension):
     def __init__(self, name: str, path: str, sourcedir: str = "") -> None:
         super().__init__(name, sources=[])
@@ -322,6 +344,15 @@ class ExtBuild(build_ext):
         debug = int(os.environ.get("DEBUG", 0)) if self.debug is None else self.debug
         build_type = "Debug" if debug else "Release"
 
+        max_jobs = os.getenv("MAX_JOBS", str(os.cpu_count()))
+        max_jobs_int = int(max_jobs)
+        
+        # Limit archive (ar/ranlib) concurrency to avoid file locking conflicts.
+        # The ar tool requires exclusive access to archive files (.a files) when
+        # creating or updating static libraries. When multiple ar processes attempt
+        # to modify the same archive file simultaneously, they compete for file locks,
+        # which can cause deadlocks and hang the build process.
+        archive_jobs = min(8, max(1, max_jobs_int // 4))
         cmake_args = [
             "-G",
             "Ninja",
@@ -336,24 +367,27 @@ class ExtBuild(build_ext):
             f"-DDEVICE_TYPE=USE_{self.device.upper()}",
             f"-DDEVICE_ARCH={self.arch.upper()}",
             f"-DINSTALL_XLLM_KERNELS={'ON' if self.install_xllm_kernels else 'OFF'}",
+            f"-DCMAKE_JOB_POOLS=archive={archive_jobs}",
         ]
-        
+
         if self.device == "a2" or self.device == "a3":
             cmake_args += ["-DUSE_NPU=ON"]
-            # set npu environment variables
             set_npu_envs()
         elif self.device == "mlu":
             cmake_args += ["-DUSE_MLU=ON"]
-            # set mlu environment variables
             set_mlu_envs()
         elif self.device == "cuda":
-            cuda_architectures = "80;89;90"
+            torch_cuda_architectures = os.getenv("TORCH_CUDA_ARCH_LIST")
+            if not torch_cuda_architectures:
+                raise ValueError("Please set TORCH_CUDA_ARCH_LIST environment variable, e.g. export TORCH_CUDA_ARCH_LIST=\"8.0 8.9 9.0 10.0 12.0\"")
             cmake_args += ["-DUSE_CUDA=ON", 
-                           f"-DCMAKE_CUDA_ARCHITECTURES={cuda_architectures}"]
-            # set cuda environment variables
+                           f"-DTORCH_CUDA_ARCH_LIST={torch_cuda_architectures}"]
             set_cuda_envs()
+        elif self.device == "ilu":
+            cmake_args += ["-DUSE_ILU=ON"]
+            set_ilu_envs()
         else:
-            raise ValueError("Please set --device to a2 or a3 or mlu or cuda.")
+            raise ValueError("Please set --device to a2 or a3 or mlu or cuda or ilu.")
 
         product = "xllm"
         if self.generate_so:
@@ -369,15 +403,15 @@ class ExtBuild(build_ext):
 
         # check if torch binary is built with cxx11 abi
         if get_cxx_abi():
-            cmake_args += ["-DUSE_CXX11_ABI=ON"]
+            cmake_args += ["-DUSE_CXX11_ABI=ON", "-D_GLIBCXX_USE_CXX11_ABI=1"]
         else:
-            cmake_args += ["-DUSE_CXX11_ABI=OFF"]
+            cmake_args += ["-DUSE_CXX11_ABI=OFF", "-D_GLIBCXX_USE_CXX11_ABI=0"]
         
         build_args = ["--config", build_type]
-        max_jobs = os.getenv("MAX_JOBS", str(os.cpu_count()))
         build_args += ["-j" + max_jobs]
 
         env = os.environ.copy()
+        env["VCPKG_MAX_CONCURRENCY"] = str(max_jobs)
         print("CMake Args: ", cmake_args)
         print("Env: ", env)
 
@@ -604,9 +638,9 @@ def parse_arguments():
     parser.add_argument(
         '--device',
         type=str.lower,
-        choices=['auto', 'a2', 'a3', 'mlu', 'cuda'],
+        choices=['auto', 'a2', 'a3', 'mlu', 'cuda', 'ilu'],
         default='auto',
-        help='Device type: a2, a3, mlu, or cuda (case-insensitive)'
+        help='Device type: a2, a3, mlu, ilu or cuda (case-insensitive)'
     )
     
     parser.add_argument(

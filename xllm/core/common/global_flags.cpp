@@ -41,7 +41,7 @@ DEFINE_int32(max_reconnect_count,
              40,
              "The max count for worker try to connect to server.");
 
-DEFINE_int32(num_threads, 32, "Number of threads to process requests.");
+DEFINE_int32(num_threads, 8, "Number of threads to process requests.");
 
 DEFINE_int32(
     max_concurrent_requests,
@@ -84,18 +84,18 @@ DEFINE_bool(enable_customize_mla_kernel, false, "enable customize mla kernel");
 
 // --- graph mode execution config ---
 
-DEFINE_bool(enable_acl_graph,
-            false,
-            "Whether to enable ACL graph execution for decode phase.");
-
 DEFINE_int32(max_seq_len_for_graph_mode,
              0,
-             "Maximum number of tokens per sequence for ACL graph execution. "
+             "Maximum number of tokens per sequence for graph execution. "
              "If 0, use model max_position_embeddings.");
 
-DEFINE_bool(enable_acl_graph_no_padding,
+DEFINE_bool(enable_graph,
             false,
-            "Whether to enable ACL graph execution for decode phase without "
+            "Whether to enable graph execution for decode phase.");
+
+DEFINE_bool(enable_graph_no_padding,
+            false,
+            "Whether to enable graph execution for decode phase without "
             "padding. If true, graph will be caputured with every actual num "
             "tokens, as stride is 1.");
 // --- vlm config ---
@@ -163,6 +163,11 @@ DEFINE_int32(
     max_decode_token_per_sequence,
     256,
     "Max decode token per sequence which used for ZeroEvictionScheduler.");
+
+// for rec, it's better to set to 100;
+DEFINE_int32(request_queue_size,
+             100000,
+             "The request queue size of the scheduler");
 
 // --- parallel config ---
 
@@ -291,7 +296,7 @@ DEFINE_bool(enable_shm,
 DEFINE_string(tool_call_parser,
               "",
               "Specify the parser for handling tool-call interactions(e.g. "
-              "qwen25, qwen3, kimi_k2, deepseekv3, glm45).");
+              "qwen25, qwen3, kimi_k2, deepseekv3, glm45, glm47).");
 
 // --- speculative config ---
 
@@ -330,6 +335,16 @@ DEFINE_bool(enable_online_preempt_offline,
             "Whether to enable online preempt offline.");
 
 // --- kvcache store config ---
+
+DEFINE_uint32(prefetch_timeout,
+              0,
+              "Prefetch timeout for prefetch from kv cache store.");
+
+DEFINE_uint32(prefetch_bacth_size,
+              2,
+              "Prefetch from kvcache store copy batch size.");
+
+DEFINE_uint32(layers_wise_copy_batchs, 4, "Layer wise H2D copy batchs.");
 
 DEFINE_double(host_blocks_factor,
               0.0,
@@ -424,7 +439,7 @@ DEFINE_bool(
     "The default prefetching ratio for gateup weight is 40%."
     "If adjustments are needed, e.g. export PREFETCH_COEFFOCIENT=0.5");
 
-// rec prefill-only mode
+// --- rec prefill-only mode ---
 DEFINE_bool(enable_rec_prefill_only,
             false,
             "Enable rec prefill-only mode (no decoder self-attention blocks "
@@ -437,6 +452,9 @@ DEFINE_bool(
     false,
     "Whether to enable dp load balance, if true, sequences within a single "
     "dp batch will be shuffled.");
+
+// --- the seed for random number generator ---
+DEFINE_int32(random_seed, -1, "Random seed for random number generator.");
 
 // --- dit cache config ---
 

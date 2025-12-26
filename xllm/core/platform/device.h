@@ -27,11 +27,13 @@ namespace xllm {
 
 class Device {
  public:
-  explicit Device(torch::Device device);
+  explicit Device(const torch::Device& device);
   ~Device() = default;
   operator torch::Device() const;
 
   void set_device() const;
+
+  void set_seed(uint64_t seed = 42) const;
 
   const torch::Device& unwrap() const;
   int32_t index() const;
@@ -41,6 +43,8 @@ class Device {
   static int device_count();
   static std::string type_str();
   static torch::DeviceType type_torch();
+  static bool is_enable_pdl();
+  static bool is_support_sm90a();
 
   int64_t total_memory();
   int64_t free_memory();
@@ -58,6 +62,10 @@ class Device {
 
  private:
   torch::Device device_;
+
+  // only used for cuda
+  static bool enable_pdl_;
+  static bool support_sm90a_;
 };
 
 }  // namespace xllm
