@@ -17,15 +17,17 @@ limitations under the License.
 #include <torch/torch.h>
 
 #include <optional>
+#include <tuple>
 
-#include "./torch_api/triton_ops_api.h"
+#include "custom_functions_npu/atb_common.h"
+#include "/torch_api/triton_ops_api.h"
 
 namespace xllm::kernel::npu {
 
 void reshape_paged_cache(torch::Tensor& key,
-                         torch::Tensor& value,
+                         std::optional<torch::Tensor>& value,
                          torch::Tensor& k_cache,
-                         torch::Tensor& v_cache,
+                         std::optional<torch::Tensor>& v_cache,
                          const torch::Tensor& slot_mapping);
 
 void batch_prefill(const torch::Tensor& query,
@@ -50,10 +52,16 @@ torch::Tensor matmul(const torch::Tensor& a,
 
 torch::Tensor active(const torch::Tensor& input, const std::string& act_mode);
 
-torch::Tensor fused_layernorm(const torch::Tensor& input,
-                              const torch::Tensor& weight,
-                              double eps,
-                              const std::string& mode);
+torch::Tensor rms_norm(const torch::Tensor& input,
+                       const torch::Tensor& weight,
+                       double eps,
+                       const std::string& mode);
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> add_rms_norm(
+    const torch::Tensor& x1,
+    const torch::Tensor& x2,
+    const torch::Tensor& gamma,
+    double epsilon);
 
 void apply_rotary(torch::Tensor& q,
                   torch::Tensor& k,

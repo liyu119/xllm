@@ -26,6 +26,8 @@ limitations under the License.
 
 #include "rec.pb.h"
 #include "slice.h"
+#include "tensor.pb.h"
+#include "worker.pb.h"
 
 namespace xllm {
 namespace util {
@@ -74,6 +76,13 @@ std::vector<uint32_t> cal_vec_split_index(uint32_t vec_size, uint32_t part_num);
 
 torch::Tensor convert_rec_tensor_to_torch(
     const proto::InferInputTensor& input_tensor);
+
+torch::Tensor proto_to_torch(const proto::Tensor& proto_tensor);
+
+bool torch_to_proto(const torch::Tensor& torch_tensor,
+                    proto::Tensor* proto_tensor);
+
+int32_t ceil_pow2(int32_t n);
 
 }  // namespace util
 }  // namespace xllm

@@ -28,7 +28,8 @@ limitations under the License. -->
 
 ### 📢 新闻
 
-- 2025-12-06: 🎉 我们在第一时间内支持了[GLM-4.6V](https://github.com/zai-org/GLM-V)模型的高效推理。
+- 2025-12-21: 🎉 我们在第一时间内支持了[GLM-4.7](https://github.com/zai-org)模型的高效推理。
+- 2025-12-08: 🎉 我们在第一时间内支持了[GLM-4.6V](https://github.com/zai-org/GLM-V)模型的高效推理。
 - 2025-12-05: 🎉 我们支持了[GLM-4.5/GLM-4.6](https://github.com/zai-org/GLM-4.5/blob/main/README_zh.md)系列模型.
 - 2025-12-05: 🎉 我们支持了[VLM-R1](https://github.com/om-ai-lab/VLM-R1) 模型.
 - 2025-12-05: 🎉 我们基于[Mooncake](https://github.com/kvcache-ai/Mooncake)构建了混合 KV 缓存管理机制，支持具备智能卸载与预取能力的全局 KV 缓存管理。
@@ -88,12 +89,15 @@ xLLM 提供了强大的智能计算能力，通过硬件系统的算力优化与
 │   │   ├── framework/             # 引擎执行模块实现
 │   │   ├── kernels/               # 国产芯片kernels适配实现
 │   │   ├── layers/                # 模型层实现
+│   │   ├── platform/              # 多平台兼容层
 │   │   ├── runtime/               # worker/executor角色实现
 │   │   ├── scheduler/             # 批调度与PD调度实现
 │   │   └── util/
+│   ├── function_call              # function call实现
 │   ├── models/                    # 模型实现
 │   ├── processors/                # 多模态模型预处理实现
 │   ├── proto/                     # 通信协议
+│   ├── pybind/                    # python接口
 |   └── server/                    # xLLM服务实例
 ├── examples/                      # 服务调用示例
 ├── tools/                         # NPU Timeline生成工具
@@ -111,7 +115,7 @@ xLLM 提供了强大的智能计算能力，通过硬件系统的算力优化与
 - Qwen2.5-VL
 - Qwen3 / Qwen3-MoE
 - Qwen3-VL / Qwen3-VL-MoE
-- GLM-4.5 / GLM-4.6 / GLM-4.6V
+- GLM-4.5 / GLM-4.6 / GLM-4.6V / GLM-4.7
 - VLM-R1
 
 ---
@@ -152,12 +156,6 @@ git submodule update
 git clone https://gitcode.com/xLLM-AI/vcpkg.git
 cd vcpkg && git checkout ffc42e97c866ce9692f5c441394832b86548422c
 export VCPKG_ROOT=/your/path/to/vcpkg
-```
-下载安装python依赖:
-```bash
-cd xllm
-pip install -r cibuild/requirements-dev.txt -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
-pip install --upgrade setuptools wheel
 ```
 
 #### 编译

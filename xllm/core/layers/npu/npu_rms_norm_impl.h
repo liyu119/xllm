@@ -31,6 +31,7 @@ limitations under the License.
 #include "framework/model/model_input_params.h"
 #include "framework/model_context.h"
 #include "framework/state_dict/state_dict.h"
+#include "loader/rms_norm_loader.h"
 #include "nlohmann/json.hpp"
 #include "npu_base_layer.h"
 #include "pytorch/adapter/utils/utils.h"
@@ -42,15 +43,15 @@ limitations under the License.
 namespace xllm {
 namespace layer {
 
-class NpuRmsNormImpl : public NpuBaseLayer {
+class RMSNormImpl : public BaseLayer {
  public:
-  explicit NpuRmsNormImpl(const ModelContext& context);
+  explicit RMSNormImpl(const ModelContext& context);
 
-  ~NpuRmsNormImpl() {};
+  ~RMSNormImpl() {};
 
-  void load_state_dict(const StateDict& state_dict) override;
+  // void load_state_dict(const StateDict& state_dict) override;
 
-  void verify_loaded_weights(const std::string weight_str) const;
+  // void verify_loaded_weights(const std::string weight_str) const;
 
   void merge_loaded_weights() override;
 
@@ -71,6 +72,7 @@ class NpuRmsNormImpl : public NpuBaseLayer {
   atb::infer::RmsNormParam norm_param_;
   atb::Tensor internal_tensors_;
 };
+TORCH_MODULE(RMSNorm);
 
 }  // namespace layer
 }  // namespace xllm

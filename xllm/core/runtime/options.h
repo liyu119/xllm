@@ -158,6 +158,12 @@ struct Options {
   //  value used if port is not included)
   PROPERTY(std::string, store_local_hostname) = "";
 
+  // Prefetch from kvcache store copy batch size
+  PROPERTY(uint32_t, prefetch_bacth_size) = 2;
+
+  // Layer wise H2D copy batchs
+  PROPERTY(uint32_t, layers_wise_copy_batchs) = 4;
+
   // dit
   // max requests per batch
   PROPERTY(int, max_requests_per_batch) = 0;
@@ -177,6 +183,10 @@ struct Options {
 
   // whether the worker and master are on the same machine.
   PROPERTY(bool, is_local) = false;
+
+  // Index ID for internal server ID, which must be set different values
+  // if the model supports multiple version or there are multiple models.
+  PROPERTY(int64_t, server_idx) = 0;
 };
 
 }  // namespace runtime

@@ -117,6 +117,13 @@ class ContinuousScheduler : public Scheduler {
     PROPERTY(int32_t, max_global_ttft_ms) = std::numeric_limits<int32_t>::max();
     // all requests use single global tpot
     PROPERTY(int32_t, max_global_tpot_ms) = std::numeric_limits<int32_t>::max();
+
+    // Index ID for internal server ID, which must be set different values
+    // if the model supports multiple version or there are multiple models.
+    PROPERTY(int64_t, server_idx) = 0;
+
+    // Prefetch timeout for prefetch from kv cache store
+    PROPERTY(uint32_t, prefetch_timeout) = 0;
   };
 
   ContinuousScheduler(Engine* engine, const Options& options);
@@ -188,7 +195,7 @@ class ContinuousScheduler : public Scheduler {
 
   KVCacheManager* kv_cache_manager_;
 
-  // a thread safe queue of requests, bounded by kRequestQueueSize
+  // a thread safe queue of requests, bounded by FLAGS_request_queue_size
   // the schedule owns the requests and manages their lifetimes.
   folly::MPMCQueue<std::shared_ptr<Request>> request_queue_;
 
@@ -265,8 +272,6 @@ class ContinuousScheduler : public Scheduler {
       size_t& num_online_decode_preempt_online_requests,
       size_t& num_online_decode_preempt_offline_requests,
       std::unique_ptr<DecodePriorityQueue>& running_queue);
-
-  virtual void prefetch_from_storage(std::shared_ptr<Request>& request);
 
   void handle_abnormal_request(
       std::unique_ptr<DecodePriorityQueue>& running_queue,

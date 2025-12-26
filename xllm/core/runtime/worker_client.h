@@ -40,7 +40,8 @@ class WorkerClient {
   virtual ~WorkerClient() = default;
 
   // initialize model, cache manager. blocking call
-  virtual bool init_model(const std::string& model_weights_path);
+  virtual bool init_model(const std::string& model_weights_path,
+                          int32_t random_seed);
 
   virtual std::tuple<int64_t, int64_t> estimate_kv_cache_capacity();
 
@@ -82,7 +83,8 @@ class WorkerClient {
 
   // initialize model, cache manager. async call
   virtual folly::SemiFuture<bool> init_model_async(
-      const std::string& model_weights_path);
+      const std::string& model_weights_path,
+      int32_t random_seed);
 
   virtual folly::SemiFuture<std::tuple<int64_t, int64_t>>
   estimate_kv_cache_capacity_async();
@@ -115,9 +117,9 @@ class WorkerClient {
       const std::vector<BlockTransferInfo>& block_transfer_info);
 
   virtual void prefetch_from_storage(
-      const std::atomic<bool>& flag,
       const std::vector<BlockTransferInfo>& block_transfer_info,
-      std::shared_ptr<std::atomic<uint32_t>>& success_cnt);
+      std::shared_ptr<std::atomic<int32_t>> flag,
+      std::shared_ptr<std::atomic<uint32_t>> success_cnt);
 
   // Run the model on the given input. async call
   // the future returns a successfull status with no meaningful value

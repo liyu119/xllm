@@ -85,10 +85,10 @@ Qwen2AttentionImpl::Qwen2AttentionImpl(const ModelContext& context) {
   // 3. RMSNorm
   if (is_qwen3_style_) {
     q_norm_ = register_module(
-        "q_norm", RmsNorm(args.head_dim(), args.rms_norm_eps(), options));
+        "q_norm", RMSNorm(args.head_dim(), args.rms_norm_eps(), options));
 
     k_norm_ = register_module(
-        "k_norm", RmsNorm(args.head_dim(), args.rms_norm_eps(), options));
+        "k_norm", RMSNorm(args.head_dim(), args.rms_norm_eps(), options));
   }
 
   // 4. Rotary embedding
@@ -126,10 +126,10 @@ torch::Tensor Qwen2AttentionImpl::forward(
 
   if (is_qwen3_style_) {
     // 2. q-norm
-    q = q_norm_->forward(q);
+    q = std::get<0>(q_norm_->forward(q));
 
     // 3. k-norm
-    k = k_norm_->forward(k);
+    k = std::get<0>(k_norm_->forward(k));
   }
 
   // 4. rope

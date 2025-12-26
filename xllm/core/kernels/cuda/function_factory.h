@@ -58,7 +58,7 @@ using DECODE_RUN_FUNC_TYPE =
                                     double,
                                     double,
                                     double)>;
-using PREFILL_PLAN_FUNC_TYPE =
+using FA2_PREFILL_PLAN_FUNC_TYPE =
     torch::TypedOperatorHandle<torch::Tensor(torch::Tensor,
                                              torch::Tensor,
                                              torch::Tensor,
@@ -74,8 +74,73 @@ using PREFILL_PLAN_FUNC_TYPE =
                                              int64_t,
                                              int64_t,
                                              bool)>;
-using PREFILL_RAGGED_RUN_FUNC_TYPE =
+using FA3_PREFILL_PLAN_FUNC_TYPE =
+    torch::TypedOperatorHandle<torch::Tensor(torch::Tensor,
+                                             torch::Tensor,
+                                             torch::Tensor,
+                                             torch::Tensor,
+                                             torch::Tensor,
+                                             torch::Tensor,
+                                             int64_t,
+                                             int64_t,
+                                             int64_t,
+                                             int64_t,
+                                             int64_t,
+                                             bool,
+                                             int64_t,
+                                             int64_t,
+                                             bool)>;
+using FA2_PREFILL_RAGGED_RUN_FUNC_TYPE =
     torch::TypedOperatorHandle<void(torch::Tensor,
+                                    torch::Tensor,
+                                    torch::Tensor,
+                                    torch::Tensor,
+                                    torch::Tensor,
+                                    torch::Tensor,
+                                    torch::Tensor,
+                                    torch::Tensor,
+                                    torch::Tensor,
+                                    std::optional<torch::Tensor>,
+                                    int64_t,
+                                    int64_t,
+                                    int64_t,
+                                    bool,
+                                    std::optional<torch::Tensor>,
+                                    std::optional<torch::Tensor>,
+                                    std::optional<torch::Tensor>,
+                                    std::optional<torch::Tensor>,
+                                    std::optional<torch::Tensor>,
+                                    std::optional<torch::Tensor>,
+                                    double,
+                                    double,
+                                    double,
+                                    double,
+                                    int64_t)>;
+using FA3_PREFILL_RAGGED_RUN_FUNC_TYPE =
+    torch::TypedOperatorHandle<void(torch::Tensor,
+                                    torch::Tensor,
+                                    torch::Tensor,
+                                    torch::Tensor,
+                                    torch::Tensor,
+                                    torch::Tensor,
+                                    torch::Tensor,
+                                    torch::Tensor,
+                                    torch::Tensor,
+                                    std::optional<torch::Tensor>,
+                                    int64_t,
+                                    int64_t,
+                                    int64_t,
+                                    bool,
+                                    std::optional<torch::Tensor>,
+                                    std::optional<torch::Tensor>,
+                                    std::optional<torch::Tensor>,
+                                    double,
+                                    double,
+                                    int64_t)>;
+using FA2_PREFILL_PAGED_RUN_FUNC_TYPE =
+    torch::TypedOperatorHandle<void(torch::Tensor,
+                                    torch::Tensor,
+                                    torch::Tensor,
                                     torch::Tensor,
                                     torch::Tensor,
                                     torch::Tensor,
@@ -210,8 +275,8 @@ class FunctionFactory {
     return f.value();
   }
 
-  PREFILL_PLAN_FUNC_TYPE prefill_plan_func(const std::string& uri) {
-    static std::optional<PREFILL_PLAN_FUNC_TYPE> f;
+  FA2_PREFILL_PLAN_FUNC_TYPE fa2_prefill_plan_func(const std::string& uri) {
+    static std::optional<FA2_PREFILL_PLAN_FUNC_TYPE> f;
     static std::unique_ptr<torch::DynamicLibrary> lib;
     if (f.has_value()) {
       return f.value();
@@ -244,8 +309,43 @@ class FunctionFactory {
     return f.value();
   }
 
-  PREFILL_RAGGED_RUN_FUNC_TYPE prefill_ragged_run_func(const std::string& uri) {
-    static std::optional<PREFILL_RAGGED_RUN_FUNC_TYPE> f;
+  FA3_PREFILL_PLAN_FUNC_TYPE fa3_prefill_plan_func(const std::string& uri) {
+    static std::optional<FA3_PREFILL_PLAN_FUNC_TYPE> f;
+    static std::unique_ptr<torch::DynamicLibrary> lib;
+    if (f.has_value()) {
+      return f.value();
+    }
+
+    static std::once_flag flag;
+    std::call_once(flag, [&uri]() {
+      lib = std::make_unique<torch::DynamicLibrary>(
+          path_to_uri_so_lib(uri).c_str(), nullptr, true);
+      std::string plan_schema_name = uri + "::plan";
+      f = torch::Dispatcher::singleton()
+              .findSchemaOrThrow(plan_schema_name.c_str(), "")
+              .typed<torch::Tensor(torch::Tensor,
+                                   torch::Tensor,
+                                   torch::Tensor,
+                                   torch::Tensor,
+                                   torch::Tensor,
+                                   torch::Tensor,
+                                   int64_t,
+                                   int64_t,
+                                   int64_t,
+                                   int64_t,
+                                   int64_t,
+                                   bool,
+                                   int64_t,
+                                   int64_t,
+                                   bool)>();
+    });
+
+    return f.value();
+  }
+
+  FA2_PREFILL_RAGGED_RUN_FUNC_TYPE fa2_prefill_ragged_run_func(
+      const std::string& uri) {
+    static std::optional<FA2_PREFILL_RAGGED_RUN_FUNC_TYPE> f;
     static std::unique_ptr<torch::DynamicLibrary> lib;
     if (f.has_value()) {
       return f.value();
@@ -259,6 +359,93 @@ class FunctionFactory {
       f = torch::Dispatcher::singleton()
               .findSchemaOrThrow(run_schema_name.c_str(), "")
               .typed<void(torch::Tensor,
+                          torch::Tensor,
+                          torch::Tensor,
+                          torch::Tensor,
+                          torch::Tensor,
+                          torch::Tensor,
+                          torch::Tensor,
+                          torch::Tensor,
+                          torch::Tensor,
+                          std::optional<torch::Tensor>,
+                          int64_t,
+                          int64_t,
+                          int64_t,
+                          bool,
+                          std::optional<torch::Tensor>,
+                          std::optional<torch::Tensor>,
+                          std::optional<torch::Tensor>,
+                          std::optional<torch::Tensor>,
+                          std::optional<torch::Tensor>,
+                          std::optional<torch::Tensor>,
+                          double,
+                          double,
+                          double,
+                          double,
+                          int64_t)>();
+    });
+
+    return f.value();
+  }
+
+  FA3_PREFILL_RAGGED_RUN_FUNC_TYPE fa3_prefill_ragged_run_func(
+      const std::string& uri) {
+    static std::optional<FA3_PREFILL_RAGGED_RUN_FUNC_TYPE> f;
+    static std::unique_ptr<torch::DynamicLibrary> lib;
+    if (f.has_value()) {
+      return f.value();
+    }
+
+    static std::once_flag flag;
+    std::call_once(flag, [&uri]() {
+      lib = std::make_unique<torch::DynamicLibrary>(
+          path_to_uri_so_lib(uri).c_str(), nullptr, true);
+      std::string run_schema_name = uri + "::ragged_run";
+      f = torch::Dispatcher::singleton()
+              .findSchemaOrThrow(run_schema_name.c_str(), "")
+              .typed<void(torch::Tensor,
+                          torch::Tensor,
+                          torch::Tensor,
+                          torch::Tensor,
+                          torch::Tensor,
+                          torch::Tensor,
+                          torch::Tensor,
+                          torch::Tensor,
+                          torch::Tensor,
+                          std::optional<torch::Tensor>,
+                          int64_t,
+                          int64_t,
+                          int64_t,
+                          bool,
+                          std::optional<torch::Tensor>,
+                          std::optional<torch::Tensor>,
+                          std::optional<torch::Tensor>,
+                          double,
+                          double,
+                          int64_t)>();
+    });
+
+    return f.value();
+  }
+
+  FA2_PREFILL_PAGED_RUN_FUNC_TYPE fa2_prefill_paged_run_func(
+      const std::string& uri) {
+    static std::optional<FA2_PREFILL_PAGED_RUN_FUNC_TYPE> f;
+    static std::unique_ptr<torch::DynamicLibrary> lib;
+    if (f.has_value()) {
+      return f.value();
+    }
+
+    static std::once_flag flag;
+    std::call_once(flag, [&uri]() {
+      lib = std::make_unique<torch::DynamicLibrary>(
+          path_to_uri_so_lib(uri).c_str(), nullptr, true);
+      std::string run_schema_name = uri + "::paged_run";
+      f = torch::Dispatcher::singleton()
+              .findSchemaOrThrow(run_schema_name.c_str(), "")
+              .typed<void(torch::Tensor,
+                          torch::Tensor,
+                          torch::Tensor,
                           torch::Tensor,
                           torch::Tensor,
                           torch::Tensor,

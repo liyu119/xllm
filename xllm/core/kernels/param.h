@@ -195,6 +195,9 @@ struct AttentionParams {
   float scale;
   // Whether to return log-sum-exp values in output_lse.
   bool return_lse = false;
+  // ========== Torch NPU related parameters ==========
+  torch::Tensor seq_lens;
+  torch::Tensor attn_mask;
 
   // ========== FlashInfer related parameters ==========
   torch::Tensor paged_kv_indptr;
@@ -203,9 +206,10 @@ struct AttentionParams {
   torch::Tensor float_workspace_buffer;
   torch::Tensor int_workspace_buffer;
   torch::Tensor page_locked_int_workspace_buffer;
-  torch::Tensor kv_cu_seq_lens;
-  torch::Tensor q_cu_seq_lens;
+
   bool enable_cuda_graph = false;
+  // Whether to use tensor core for decode attention computation. Default: true.
+  bool use_tensor_core = true;
 
   // ========== Prefill-specific parameters ==========
   // Key tensor. Shape: [num_tokens, num_kv_heads, head_dim_qk] (packed) or
@@ -223,11 +227,18 @@ struct AttentionParams {
   // Optional cumulative query sequence lengths. Type: int32.
   // Shape: [batch + 1]. Required in packed mode (query is 3D). Must be
   // contiguous.
-  std::optional<torch::Tensor> query_start_loc;
+  std::optional<torch::Tensor> q_cu_seq_lens;
   // Optional cumulative KV sequence lengths. Type: int32.
   // Shape: [batch + 1]. Required in packed mode or when block_table has
   // max_num_blocks_per_seq > 1. Must be contiguous.
-  std::optional<torch::Tensor> seq_start_loc;
+  std::optional<torch::Tensor> kv_cu_seq_lens;
+  // Query sequence lengths.Shape: [batch]. Type: int32. Must be contiguous.
+  // Represents the current query length for each sequence in the batch.
+  torch::Tensor q_seq_lens;
+  // KV sequence lengths tensor. Shape: [batch]. Type: int32. Must be
+  // contiguous. Represents the current context length for each sequence in the
+  // batch.
+  torch::Tensor kv_seq_lens;
   // Optional attention bias tensor. Used for custom attention patterns.
   std::optional<torch::Tensor> attn_bias;
   // Optional key quantization scale tensor.
@@ -254,10 +265,6 @@ struct AttentionParams {
   // shape is [num_blocks, num_kv_heads, v_cache_len, head_dim] where
   // v_cache_len = PAD_UP_DIV(block_size, 2).
   std::optional<torch::Tensor> v_cache;
-  // KV sequence lengths tensor. Shape: [batch]. Type: int32. Must be
-  // contiguous. Represents the current context length for each sequence in the
-  // batch.
-  torch::Tensor kv_seq_lens;
   // Optional key cache quantization scale tensor. Must be contiguous.
   // - 2D [num_kv_heads, head_dim]: per-channel quantization
   // - 3D [num_blocks, num_kv_heads, block_size]: per-token quantization
@@ -531,6 +538,131 @@ struct MoeCombineResultParams {
   std::optional<torch::Tensor> bias;
 };
 
+struct MoeAll2AllGenSendLayoutParams {
+  // Expert token count tensor.
+  // Shape: [expert_num].
+  // Dtype: int32.
+  // Each element represents the number of tokens assigned to each expert.
+  torch::Tensor token_count;
+  // Number of ranks (processes) participating in All2All.
+  // Must be >= 0.
+  int64_t nrank;
+};
+
+struct MoeAll2AllGenGatherIndexParams {
+  // The table that indicates the relationship of token for each Expert Parallel
+  // part. Shape: [rank_num, expert_num], where rank_num is the number of
+  // devices in Expert Parallel, and expert_num is the number of experts handled
+  // by each device. Dtype: int32.
+  torch::Tensor token_num;
+  // The max token count for each rank (used for padding).
+  // Dtype: int32. Must be >= 0.
+  int64_t pad_num;
+  // Whether to return the cusum_token_count tensor.
+  // If true, cusum_token_count will be returned.
+  bool return_cusum_token_count = false;
+};
+
+struct MoeAll2AllCreateParams {
+  // Byte size of a single token for dispatch All-to-All operation.
+  // Each token to be dispatched requires this many bytes.
+  int64_t dispatch_token_byte;
+  // Byte size of a single token for combine All-to-All operation.
+  // Each token to be combined requires this many bytes.
+  int64_t combine_token_byte;
+  // Maximum number of experts participating in the All-to-All operation.
+  // (Sets the upper bound for how many experts can be involved.
+  int64_t max_expert_num;
+  // Maximum number of tokens to be processed.
+  // Upper bound on the total batch size in tokens for the operation.
+  int64_t max_token_num;
+  // Rank ID of the current process in the distributed group, within [0,
+  // nrank-1]. Identifies this process within the world group.
+  int64_t rank;
+  // Total number of processes in the distributed group.
+  // Used for collective communication context and split assignment.
+  int64_t nrank;
+  // The current compute device to be used、
+  // default to CPU
+  torch::Device device = torch::Device(torch::kCPU);
+};
+
+struct MoeAll2AllInitParams {
+  // communication backend handle for All-to-All operation.
+  // obtained from moe_all2all_create.
+  int64_t handle;
+  // CPU tensor containing aggregated exchange information from all nrank
+  // processes.
+  torch::Tensor all_exchange_info;
+  // The current compute device to be used
+  // default to CPU
+  torch::Device device = torch::Device(torch::kCPU);
+};
+
+struct MoeAll2AllDispatchParams {
+  // Communication backend handle for All-to-All operation.
+  // Obtained from moe_all2all_create.
+  int64_t handle;
+  // Byte size of a single token.
+  int64_t token_byte;
+  // Number of tokens to be processed in the current operation.
+  int64_t token_num;
+  // Offset and token count for each rank.
+  // Output from torch_mlu_ops.moe_all2all_gen_send_layout(token_count, nrank).
+  // The token_count is generated by moe_gen_idx.
+  // Shape: [nrank, 2]. Type: int32.
+  torch::Tensor send_layout;
+  // Number of tokens to send to each expert.
+  // Shape: [max_expert_num]. Type: int32.
+  torch::Tensor send_token_num;
+  // Offset and token count from peer ranks.
+  // Shape: [nrank, 2]. Type: int32.
+  torch::Tensor recv_layout;
+  // Expected number of tokens to receive from each expert.
+  // Shape: [max_expert_num]. Type: int32.
+  torch::Tensor recv_token_num;
+  // Optional tensor containing tokens to dispatch.
+  // If not provided, defaults to dispatch_send created by moe_all2all_create.
+  std::optional<torch::Tensor> send_token;
+  // Optional buffer for receiving tokens.
+  // If not provided, defaults to dispatch_recv created by moe_all2all_create.
+  std::optional<torch::Tensor> recv_token;
+};
+
+struct MoeAll2AllCombineParams {
+  // communication backend handle for All-to-All operation.
+  // obtained from moe_all2all_create.
+  int64_t handle;
+  // Byte size of a single token.
+  int64_t token_byte;
+  // The number of tokens to receive.
+  int64_t token_num;
+  // The offset and token count for each rank, output from
+  // torch_mlu_ops.moe_all2all_gen_send_layout(recv_token_num, nrank).
+  // Shape: [nrank, 2],
+  // Type: int32.
+  torch::Tensor send_src_layout;
+  // The expected receive pattern from peer ranks.
+  // Shape: [nrank, 2],
+  // Type: int32.
+  torch::Tensor send_dst_layout;
+  // Optional tensor containing the tokens to dispatch. If not provided,
+  // defaults to combine_send created by moe_all2all_create.
+  std::optional<torch::Tensor> send_token;
+  // Optional buffer for receiving tokens. If not provided,
+  // defaults to combine_recv created by moe_all2all_create.
+  std::optional<torch::Tensor> recv_token;
+};
+
+struct MoeAll2AllDestroyParams {
+  // communication backend handle for All-to-All operation.
+  // obtained from moe_all2all_create.
+  int64_t handle;
+  // The current compute device to be used
+  // default to CPU
+  torch::Device device = torch::Device(torch::kCPU);
+};
+
 // Per token smooth quantize parameters
 // Note: Current MLU implementation uses "dynamic_per_token" quantization mode.
 struct ScaledQuantizeParams {
@@ -744,6 +876,31 @@ struct MaskedIndexerSelectPagedKVParams {
   int64_t quant_block_size;
 };
 
+struct GatherSplitParams {
+  // Input tensor. Shape: (token_num, input_size).
+  // Dtype: int8, float32, float16, or bfloat16.
+  torch::Tensor input;
+  // Gather index tensor. Shape: (token_num).
+  // Dtype: int32.
+  // Used to select valid tokens from the input tensor.
+  torch::Tensor gather_index;
+  // Number of valid tokens tensor. Shape: (1).
+  // Dtype: int32.
+  // Its first element is the actual valid token count: valid_token_num =
+  // valid_token_num[0].item().
+  torch::Tensor valid_token_num;
+  // Output tensor for the "head" split. Shape: (token_num, size_0).
+  // Dtype: same as input.
+  // Holds the gathered and split tokens for the first size_0 elements of each
+  // token.
+  torch::Tensor output_head;
+  // Optional output tensor for the "tail" split. Shape: (token_num, input_size
+  // - size_0). Dtype: same as input. If provided, holds the gathered and split
+  // tokens for the remaining elements after size_0.
+  // Pass empty tensor to skip the tail split.
+  torch::Tensor output_tail;
+};
+
 // NPU Fused GDN Gating parameters
 struct FusedGdnGatingParams {
   torch::Tensor A_log;
@@ -760,13 +917,13 @@ struct FusedRecurrentGatedDeltaRuleParams {
   torch::Tensor k;
   torch::Tensor v;
   torch::Tensor g;
-  const std::optional<torch::Tensor> beta = std::nullopt;
-  const std::optional<float> scale = std::nullopt;
-  const std::optional<torch::Tensor> initial_state = std::nullopt;
+  std::optional<torch::Tensor> beta = std::nullopt;
+  std::optional<float> scale = std::nullopt;
+  std::optional<torch::Tensor> initial_state = std::nullopt;
   bool inplace_final_state = true;
-  const std::optional<torch::Tensor> cu_seqlens = std::nullopt;
-  const std::optional<torch::Tensor> ssm_state_indices = std::nullopt;
-  const std::optional<torch::Tensor> num_accepted_tokens = std::nullopt;
+  std::optional<torch::Tensor> cu_seqlens = std::nullopt;
+  std::optional<torch::Tensor> ssm_state_indices = std::nullopt;
+  std::optional<torch::Tensor> num_accepted_tokens = std::nullopt;
   bool use_qk_l2norm_in_kernel = false;
 };
 
@@ -777,12 +934,12 @@ struct CausalConv1dUpdateParams {
   torch::Tensor weight;
   torch::Tensor bias;
   bool activation = true;
-  const std::optional<torch::Tensor> conv_seqlens = std::nullopt;
-  const std::optional<torch::Tensor> conv_state_indices = std::nullopt;
-  const std::optional<torch::Tensor> num_accepted_tokens = std::nullopt;
-  const std::optional<torch::Tensor> query_start_loc = std::nullopt;
+  std::optional<torch::Tensor> conv_seqlens = std::nullopt;
+  std::optional<torch::Tensor> conv_state_indices = std::nullopt;
+  std::optional<torch::Tensor> num_accepted_tokens = std::nullopt;
+  std::optional<torch::Tensor> query_start_loc = std::nullopt;
   int32_t max_query_len = -1;
-  const std::optional<torch::Tensor>& intermediate_conv_window = std::nullopt;
+  std::optional<torch::Tensor>& intermediate_conv_window = std::nullopt;
   int32_t pad_slot_id = -1;
   bool validate_data = false;
 };
@@ -842,6 +999,17 @@ struct MoeInitRoutingV2Params {
   torch::IntArrayRef active_expert_range;
   int row_idx_type;
   c10::OptionalArrayRef<c10::SymInt> restore_shape;
+};
+
+struct GatedLayerNormParams {
+  torch::Tensor& x;
+  torch::Tensor& weight;
+  torch::Tensor& bias;
+  double eps;
+  std::optional<torch::Tensor>& z = std::nullopt;
+  int64_t group_size = -1;
+  bool norm_before_gate = true;
+  bool is_rms_norm = false;
 };
 
 }  // namespace xllm::kernel

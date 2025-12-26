@@ -49,6 +49,22 @@ torch::Tensor moe_expand_input(MoeExpandInputParams& params);
 
 torch::Tensor moe_combine_result(MoeCombineResultParams& params);
 
+torch::Tensor moe_all2all_gen_send_layout(
+    MoeAll2AllGenSendLayoutParams& params);
+
+std::vector<torch::Tensor> moe_all2all_gen_gather_index(
+    MoeAll2AllGenGatherIndexParams& params);
+
+std::vector<torch::Tensor> moe_all2all_create(MoeAll2AllCreateParams& params);
+
+void moe_all2all_init(MoeAll2AllInitParams& params);
+
+void moe_all2all_dispatch(MoeAll2AllDispatchParams& params);
+
+void moe_all2all_combine(MoeAll2AllCombineParams& params);
+
+void moe_all2all_destroy(MoeAll2AllDestroyParams& params);
+
 std::tuple<torch::Tensor, torch::Tensor> scaled_quantize(
     ScaledQuantizeParams& params);
 
@@ -59,6 +75,8 @@ torch::Tensor apply_top_k_top_p(TopKPParams& params);
 torch::Tensor random_sample(RandomSampleParams& params);
 
 void masked_indexer_select_paged_kv(MaskedIndexerSelectPagedKVParams& params);
+
+void gather_split(GatherSplitParams& params);
 
 std::pair<torch::Tensor, torch::Tensor> fused_gdn_gating(FusedGdnGatingParams& params);
 
@@ -78,5 +96,6 @@ torch::Tensor swiglu(SwigluParams &params);
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> moe_init_routing_v2(
     MoeInitRoutingV2Params &params);
+torch::Tensor gated_layer_norm(GatedLayerNormParams& params);
 
 }  // namespace xllm::kernel

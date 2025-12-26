@@ -32,8 +32,9 @@ limitations under the License.
 
 namespace xllm {
 
-bool WorkerClient::init_model(const std::string& model_weights_path) {
-  return worker_->init_model(model_weights_path);
+bool WorkerClient::init_model(const std::string& model_weights_path,
+                              int32_t random_seed) {
+  return worker_->init_model(model_weights_path, random_seed);
 }
 
 bool WorkerClient::allocate_kv_cache(
@@ -120,8 +121,9 @@ folly::SemiFuture<folly::Unit> WorkerClient::process_group_test_async() {
 
 // initialize model, cache manager. async call
 folly::SemiFuture<bool> WorkerClient::init_model_async(
-    const std::string& model_weights_path) {
-  return worker_->init_model_async(model_weights_path);
+    const std::string& model_weights_path,
+    int32_t random_seed) {
+  return worker_->init_model_async(model_weights_path, random_seed);
 }
 
 folly::SemiFuture<bool> WorkerClient::allocate_kv_cache_async(
@@ -164,16 +166,16 @@ folly::SemiFuture<uint32_t> WorkerClient::transfer_kv_blocks(
 }
 
 void WorkerClient::prefetch_from_storage(
-    const std::atomic<bool>& flag,
     const std::vector<BlockTransferInfo>& block_transfer_info,
-    std::shared_ptr<std::atomic<uint32_t>>& success_cnt) {
+    std::shared_ptr<std::atomic<int32_t>> flag,
+    std::shared_ptr<std::atomic<uint32_t>> success_cnt) {
   LOG(FATAL) << "WorkerClient Method prefetch_from_storage is UnImplemented.";
 }
 
 void WorkerClient::transfer_kv_blocks(
     const uint64_t batch_id,
     const std::vector<BlockTransferInfo>& block_transfer_info) {
-  worker_->transfer_kv_blocks(batch_id, block_transfer_info);
+  LOG(FATAL) << "WorkerClient Method transfer_kv_blocks is UnImplemented.";
 }
 
 const torch::Device& WorkerClient::device() const { return worker_->device(); }

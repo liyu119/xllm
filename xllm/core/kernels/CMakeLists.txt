@@ -12,6 +12,10 @@ if(USE_CUDA)
   add_subdirectory(cuda)
 endif()
 
+if(USE_ILU)
+  add_subdirectory(ilu)
+endif()
+
 cc_library(
   NAME
     kernels
@@ -22,7 +26,8 @@ cc_library(
     ops_api.cpp
   DEPS
     torch
-    $<$<BOOL:${USE_NPU}>:npu_kernels>
+    $<$<BOOL:${USE_NPU}>:torch_npu_kernels>
     $<$<BOOL:${USE_MLU}>:mlu_kernels>
     $<$<BOOL:${USE_CUDA}>:cuda_kernels>
+    $<$<BOOL:${USE_ILU}>:ilu_kernels>
 )

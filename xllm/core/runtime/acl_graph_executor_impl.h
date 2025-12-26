@@ -26,8 +26,8 @@ limitations under the License.
 #include "core/framework/kv_cache/kv_cache.h"
 #include "core/framework/model/causal_lm.h"
 #include "core/framework/model/model_input_params.h"
-#include "core/layers/attention_mask.h"
 #include "executor_impl.h"
+#include "executor_impl_factory.h"
 #include "options.h"
 #include "torch_npu/csrc/core/npu/NPUGraph.h"
 
@@ -266,5 +266,5 @@ class AclGraphExecutorImpl : public ExecutorImpl {
   // For num_tokens >= 8: use multiples of 8
   uint32_t get_bucket_num_tokens(uint32_t num_tokens) const;
 };
-
+REGISTER_EXECUTOR("npu", AclGraphExecutorImpl);
 }  // namespace xllm

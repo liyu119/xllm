@@ -15,12 +15,6 @@ limitations under the License.
 
 #pragma once
 
-#if defined(USE_NPU)
-#include <atb/atb_infer.h>
-
-#include "xllm_kernels/core/include/atb_speed/log.h"
-#endif
-
 #include <c10/core/ScalarType.h>
 #include <torch/torch.h>
 
@@ -30,8 +24,7 @@ limitations under the License.
 #include "core/framework/model/model_input_params.h"
 #include "core/layers/lm_head.h"
 #include "core/layers/qwen2_decoder_layer.h"
-#include "core/layers/qwen2dot5_vision_decode_layer.h"
-#include "core/layers/rms_norm.h"
+#include "core/layers/qwen2dot5_vision_encode_layer.h"
 #include "models/llm/qwen2.h"
 #include "models/model_registry.h"
 #include "processors/input_processor.h"
@@ -178,13 +171,6 @@ class Qwen2_5_VisionBlockImpl : public torch::nn::Module {
     encoder_layer_->load_state_dict(state_dict);
   }
 
-#if defined(USE_NPU)
-  void verify_loaded_weights(const std::string& prefix) const {
-    encoder_layer_->verify_loaded_weights();
-  }
-  void merge_loaded_weights() { encoder_layer_->merge_loaded_weights(); }
-#endif
-
  private:
   layer::Qwen2dot5VisionEncoderLayer encoder_layer_{nullptr};
 };
@@ -293,13 +279,10 @@ class Qwen2_5_VisionPatchMergerImpl : public torch::nn::Module {
 
     hidden_size_ =
         context_dim * static_cast<int>(std::pow(spatial_merge_size, 2));
-#if defined(USE_NPU)
-    ln_q_ = register_module("ln_q", layer::RmsNorm(context));
-#else
+
     ln_q_ = register_module(
         "ln_q",
-        layer::RmsNorm(context_dim, model_args.rms_norm_eps(), options));
-#endif
+        layer::RMSNorm(context_dim, model_args.rms_norm_eps(), options));
 
     auto cpl = torch::nn::Linear(
         torch::nn::LinearOptions(hidden_size_, hidden_size_).bias(true));
@@ -315,11 +298,7 @@ class Qwen2_5_VisionPatchMergerImpl : public torch::nn::Module {
   }
 
   torch::Tensor forward(torch::Tensor x) {
-#if defined(USE_NPU)
-    x = ln_q_(x, 0);
-#elif defined(USE_MLU)
-    x = ln_q_(x);
-#endif
+    x = std::get<0>(ln_q_(x));
     x = x.view({-1, hidden_size_});
     return mlp_->forward(x);
   }
@@ -360,26 +339,10 @@ class Qwen2_5_VisionPatchMergerImpl : public torch::nn::Module {
     }
   }
 
-#if defined(USE_NPU)
-  void verify_loaded_weights(const std::string& prefix) const {
-    ln_q_->verify_loaded_weights(prefix + "ln_q.");
-    CHECK(is_cpl_weight_loaded)
-        << "weight is not loaded for " << prefix + "mlp.0" + ".weight";
-    CHECK(is_cpl_bias_loaded)
-        << "bias is not loaded for " << prefix + "mlp.0" + ".bias";
-    CHECK(is_rpl_weight_loaded)
-        << "weight is not loaded for " << prefix + "mlp.2" + ".weight";
-    CHECK(is_rpl_bias_loaded)
-        << "bias is not loaded for " << prefix + "mlp.2" + ".bias";
-  }
-
-  void merge_loaded_weights() { ln_q_->merge_loaded_weights(); }
-#endif
-
  private:
   int64_t hidden_size_;
 
-  layer::RmsNorm ln_q_{nullptr};
+  layer::RMSNorm ln_q_{nullptr};
   torch::nn::Sequential mlp_{nullptr};
   std::tuple<torch::nn::Linear, torch::nn::GELU, torch::nn::Linear> layers_ = {
       nullptr,
@@ -585,17 +548,6 @@ class Qwen2_5_VisionTransformerImpl : public torch::nn::Module {
     m_cos = rotary_pos_emb.cos().type_as(hidden_states);
     m_sin = rotary_pos_emb.sin().type_as(hidden_states);
 
-#if defined(USE_NPU)
-    // transformers
-    cu_seqlens = torch::diff(cu_seqlens);
-    cu_window_seqlens = torch::diff(cu_window_seqlens);
-
-    m_cos = torch::nn::functional::pad(
-        m_cos, torch::nn::functional::PadFuncOptions({0, 24}));
-    m_sin = torch::nn::functional::pad(
-        m_sin, torch::nn::functional::PadFuncOptions({0, 24}));
-#endif
-
     m_cos = m_cos.repeat({1, 2});
     m_sin = m_sin.repeat({1, 2});
     ModelInputParams& input_params_new =
@@ -645,24 +597,6 @@ class Qwen2_5_VisionTransformerImpl : public torch::nn::Module {
 
     merger_->load_state_dict(state_dict.get_dict_with_prefix("merger."));
   }
-
-#if defined(USE_NPU)
-  void verify_loaded_weights(const std::string& prefix) const {
-    patch_embed_->verify_loaded_weights(prefix + "patch_embed.");
-    for (int idx = 0; idx < blocks_->size(); ++idx) {
-      layers_[idx]->verify_loaded_weights(prefix + "blocks." +
-                                          std::to_string(idx) + ".");
-    }
-    merger_->verify_loaded_weights(prefix + "merger.");
-  }
-
-  void merge_loaded_weights() {
-    for (int idx = 0; idx < blocks_->size(); ++idx) {
-      layers_[idx]->merge_loaded_weights();
-    }
-    merger_->merge_loaded_weights();
-  }
-#endif
 
  private:
   int hidden_size_ = 0;
@@ -791,11 +725,6 @@ class Qwen2_5_VLForConditionalGenerationImpl : public torch::nn::Module {
       visual_->load_state_dict(state_dict->get_dict_with_prefix("visual."));
     }
 
-#if defined(USE_NPU)
-    // verify
-    visual_->verify_loaded_weights("visual.");
-    visual_->merge_loaded_weights();
-#endif
     if (!model_args_.image_embedding_mode()) {
       language_model_->load_model(std::move(loader));
     }

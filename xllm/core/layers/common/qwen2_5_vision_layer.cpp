@@ -28,8 +28,8 @@ Qwen2_5_VisionLayerImpl::Qwen2_5_VisionLayerImpl(const ModelContext& context,
   int64_t mlp_intermediate_size = args.mm_intermediate_size();
   bool is_gated = true;
   attention_ = register_module("self_attn", Qwen2VisionAttention(context));
-  norm1_ = register_module("norm1", RmsNorm(dim, args.rms_norm_eps(), options));
-  norm2_ = register_module("norm2", RmsNorm(dim, args.rms_norm_eps(), options));
+  norm1_ = register_module("norm1", RMSNorm(dim, args.rms_norm_eps(), options));
+  norm2_ = register_module("norm2", RMSNorm(dim, args.rms_norm_eps(), options));
 
   if (is_qwen3_style) {
     norm1_->set_layernorm_mode();
@@ -64,16 +64,27 @@ torch::Tensor Qwen2_5_VisionLayerImpl::forward(
     std::vector<int32_t>& cu_seq_len_vec,
     ModelInputParams& input_params,
     int node_id) {
-  auto norm_output1 = norm1_(hidden_states);
+  auto norm_output1 = std::get<0>(norm1_(hidden_states));
   auto output = hidden_states + attention_(norm_output1,
                                            m_cos_pos,
                                            m_sin_pos,
                                            cu_seq_len,
                                            cu_seq_len_vec,
                                            input_params);
-  auto norm_output2 = norm2_(output);
+  auto norm_output2 = std::get<0>(norm2_(output));
   output = output + mlp_(norm_output2);
   return output;
+}
+
+Qwen2_VisionLayerImpl::Qwen2_VisionLayerImpl(const ModelContext& context)
+    : Qwen2_5_VisionLayerImpl(context, true) {}
+
+void Qwen2_VisionLayerImpl::load_state_dict(const StateDict& state_dict) {
+  attention_->load_state_dict(state_dict.get_dict_with_prefix("attn."));
+  mlp_->load_state_dict(
+      state_dict.get_dict_with_prefix("mlp."), {"fc1."}, "fc2.");
+  norm1_->load_state_dict(state_dict.get_dict_with_prefix("norm1."));
+  norm2_->load_state_dict(state_dict.get_dict_with_prefix("norm2."));
 }
 
 Qwen3_VisionLayerImpl::Qwen3_VisionLayerImpl(const ModelContext& context)

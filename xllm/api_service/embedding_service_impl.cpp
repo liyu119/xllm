@@ -20,9 +20,9 @@ limitations under the License.
 #include <string>
 
 #include "common/instance_name.h"
+#include "distributed_runtime/llm_master.h"
 #include "framework/request/request_params.h"
 #include "mm_service_utils.h"
-#include "runtime/llm_master.h"
 #include "util/utils.h"
 #include "util/uuid.h"
 
@@ -150,10 +150,15 @@ void MMEmbeddingServiceImpl::process_async_impl(
     return;
   }
   auto request_id = request_params.request_id;
+
+  std::string payload;
+  call->get_binary_payload(payload);
+
   // schedule the request
   master_->handle_request(
       std::move(messages),
       std::move(request_params),
+      std::move(payload),
       [call,
        model,
        request_id = request_id,

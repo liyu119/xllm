@@ -22,11 +22,11 @@ limitations under the License.
 #include "api_service/call.h"
 #include "core/common/options.h"
 #include "core/common/types.h"
+#include "core/distributed_runtime/llm_master.h"
+#include "core/distributed_runtime/vlm_master.h"
 #include "core/framework/request/mm_data.h"
 #include "core/framework/request/request_output.h"
 #include "core/framework/request/request_params.h"
-#include "core/runtime/llm_master.h"
-#include "core/runtime/vlm_master.h"
 
 namespace xllm {
 namespace py = pybind11;
@@ -246,12 +246,9 @@ PYBIND11_MODULE(xllm_export, m) {
              }
              return py::none();
            })
-      .def_readwrite("ty", &MMData::ty_)
-      .def_readwrite("data", &MMData::data_)
       .def("__repr__", [](const MMData& self) {
         std::stringstream ss;
-        ss << "MMData(" << static_cast<int>(self.ty_) << ": "
-           << self.data_.size() << " items)";
+        ss << "MMData(" << self.type() << ": " << self.size() << " items)";
         return ss.str();
       });
 

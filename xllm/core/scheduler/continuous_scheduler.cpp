@@ -27,24 +27,22 @@ limitations under the License.
 #include <memory>
 #include <sstream>
 
+#include "common/global_flags.h"
 #include "common/metrics.h"
+#include "distributed_runtime/engine.h"
 #include "framework/batch/batch_factory.h"
 #include "framework/request/priority_comparator.h"
 #include "framework/request/request.h"
 #include "framework/request/sequence.h"
-#include "runtime/engine.h"
 #include "scheduler/decode_priority_queue.h"
 #include "util/utils.h"
 
 namespace xllm {
-namespace {
-constexpr size_t kRequestQueueSize = 100000;
-}  // namespace
 
 ContinuousScheduler::ContinuousScheduler(Engine* engine, const Options& options)
     : options_(options),
       engine_(engine),
-      request_queue_(kRequestQueueSize),
+      request_queue_(FLAGS_request_queue_size),
       waiting_priority_queue_(create_comparator(options.priority_strategy())),
       waiting_priority_queue_offline_(
           create_comparator(options.priority_strategy())) {
@@ -101,7 +99,7 @@ bool ContinuousScheduler::add_request(std::shared_ptr<Request>& request) {
   CHECK(request != nullptr);
   CHECK(!request->sequences().empty());
 
-  prefetch_from_storage(request);
+  kv_cache_manager_->prefetch_from_storage(request);
 
   if (request_queue_.write(request)) {
     return true;
@@ -190,8 +188,9 @@ void ContinuousScheduler::handle_prefill_requests(
   bool blocks_exhausted = false;
   while (!waiting_priority_queue.empty() && remaining_seq_budget > 0 &&
          remaining_token_budget > 0 && latency_budget > estimate_latency) {
-    if (kv_cache_manager_->kv_cache_utilization() >=
-        FLAGS_prefill_scheduling_memory_usage_threshold) {
+    if (!options_.enable_disagg_pd() &&
+        kv_cache_manager_->kv_cache_utilization() >=
+            FLAGS_prefill_scheduling_memory_usage_threshold) {
       blocks_exhausted = true;
       break;
     }
@@ -212,6 +211,13 @@ void ContinuousScheduler::handle_prefill_requests(
           << "Waiting request should have only one sequence.";
     }
 
+    if (!kv_cache_manager_->update_prefetch_result(
+            request, options_.prefetch_timeout())) {
+      waiting_priority_queue.pop();
+      waiting_priority_queue.push(request);
+      continue;
+    }
+
     // TODO: FIXME later
     // Optimization of the scheduling algorithm under multiple sequences
     // TODO: can refactor like handle_decode otherwise request with multiple
@@ -229,7 +235,6 @@ void ContinuousScheduler::handle_prefill_requests(
         continue;
       }
 
-      prefill_sequence->update_prefetch_result();
       // FIXME: use actual num_tokens to handle
       // Currently overestimating the number of tokens actually processed when
       // enable prefix cache
@@ -810,45 +815,9 @@ std::vector<Batch> ContinuousScheduler::prepare_batch() {
   if (!is_batches_empty) {
     // only update the scheduling latency when there are requests to process
     COUNTER_ADD(scheduling_latency_seconds, timer.elapsed_seconds());
-
-    // TODO(kangmeng): abstract this code(and the code below) into a new class
-    // here.
-    if (kv_cache_manager_->allow_host_block_extend()) {
-      auto* load_block_transfer_infos =
-          kv_cache_manager_->get_load_block_transfer_infos();
-
-      for (int i = 0; i < batches.size(); i++) {
-        if (!load_block_transfer_infos->at(i).empty()) {
-          batches[i].set_batch_id();
-          engine_->transfer_kv_blocks(
-              i,
-              batches[i].batch_id(),
-              std::move(load_block_transfer_infos->at(i)));
-        }
-      }
-    }
-  }
-
-  if (kv_cache_manager_->allow_host_block_extend()) {
-    auto* offload_block_transfer_infos =
-        kv_cache_manager_->get_offload_block_transfer_infos();
-
-    bool is_all_dp_copy_info_empty = true;
-    std::vector<std::vector<folly::SemiFuture<uint32_t>>> futures;
-    futures.resize(offload_block_transfer_infos->size());
-
-    for (int i = 0; i < futures.size(); i++) {
-      if (!offload_block_transfer_infos->at(i).empty()) {
-        futures[i] = std::move(engine_->transfer_kv_blocks(
-            i, std::move(offload_block_transfer_infos->at(i))));
-
-        is_all_dp_copy_info_empty = false;
-      }
-    }
-
-    if (!is_all_dp_copy_info_empty) {
-      kv_cache_manager_->postprocess_offload(futures);
-    }
+    kv_cache_manager_->transfer_blocks(batches);
+  } else {
+    kv_cache_manager_->transfer_blocks(std::nullopt);
   }
 
   GAUGE_SET(num_pending_requests,
@@ -912,39 +881,6 @@ std::vector<Batch> ContinuousScheduler::schedule_request(
   }
   // return an empty batch
   return batch;
-}
-
-void ContinuousScheduler::prefetch_from_storage(
-    std::shared_ptr<Request>& request) {
-  if (request->sequences()[0]->kv_state().num_kv_blocks() != 0 ||
-      request->sequences()[0]->host_kv_state().num_kv_blocks() != 0) {
-    LOG(ERROR)
-        << "prefetch_from_storage can only be called before prepare batch!";
-    return;
-  }
-  for (auto& prefill_sequence : request->sequences()) {
-    const size_t num_additional_blocks =
-        kv_cache_manager_->pre_allocate(prefill_sequence.get());
-    if (num_additional_blocks > 0) {
-      const auto host_blocks = prefill_sequence->host_kv_state().kv_blocks();
-      std::vector<BlockTransferInfo> block_transfer_infos;
-      block_transfer_infos.reserve(num_additional_blocks);
-      for (int i = host_blocks.size() - num_additional_blocks;
-           i < host_blocks.size();
-           i++) {
-        block_transfer_infos.emplace_back(
-            BlockTransferInfo(-1,
-                              host_blocks[i].id(),
-                              host_blocks[i].get_immutable_hash_value(),
-                              TransferType::G2H));
-      }
-
-      engine_->prefetch_from_storage(prefill_sequence->dp_rank(),
-                                     prefill_sequence->get_termination_flag(),
-                                     std::move(block_transfer_infos),
-                                     prefill_sequence->get_prefetch_results());
-    }
-  }
 }
 
 // step the scheduler forward by one step

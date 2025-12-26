@@ -62,9 +62,11 @@ class CommChannel {
                               const std::vector<std::string>& device_ips,
                               const std::vector<uint16_t>& ports);
 
-  virtual bool init_model(const std::string& model_weights_path);
+  virtual bool init_model(const std::string& model_weights_path,
+                          int32_t random_seed);
 
   virtual bool init_model_async(const std::string& model_weights_path,
+                                int32_t random_seed,
                                 folly::Promise<bool>& promise);
 
   virtual bool estimate_kv_cache_capacity(int64_t& available_memory,
@@ -96,9 +98,9 @@ class CommChannel {
       const std::vector<BlockTransferInfo>& block_transfer_info);
 
   virtual void prefetch_from_storage(
-      const std::atomic<bool>& flag,
       const std::vector<BlockTransferInfo>& block_transfer_info,
-      std::shared_ptr<std::atomic<uint32_t>>& success_cnt);
+      std::shared_ptr<std::atomic<int32_t>> flag,
+      std::shared_ptr<std::atomic<uint32_t>> success_cnt);
 
   virtual bool get_last_step_result_async(
       folly::Promise<std::optional<RawForwardOutput>>& promise);

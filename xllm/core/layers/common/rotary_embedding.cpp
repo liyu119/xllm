@@ -21,15 +21,18 @@ limitations under the License.
 namespace xllm {
 namespace layer {
 
+RotaryEmbeddingImpl::RotaryEmbeddingImpl(const ModelContext& context) {
+  LOG(FATAL) << "Not implement currently.";
+}
+
 RotaryEmbeddingImpl::RotaryEmbeddingImpl(int64_t rotary_dim,
                                          int64_t max_position_embeddings,
                                          int64_t rope_theta,
                                          bool interleaved,
                                          const torch::TensorOptions& options)
     : interleaved_(interleaved) {
-  auto inv_freq =
-      xllm::rotary::compute_inv_freq(rotary_dim, rope_theta, options);
-  const auto cos_sin = xllm::rotary::compute_cos_sin_cache(
+  auto inv_freq = rotary::compute_inv_freq(rotary_dim, rope_theta, options);
+  const auto cos_sin = rotary::compute_cos_sin_cache(
       rotary_dim, max_position_embeddings, interleaved, inv_freq, options);
   cos_sin_cache_ = register_buffer("cos_sin_cache", cos_sin);
 
@@ -48,7 +51,7 @@ void RotaryEmbeddingImpl::forward(torch::Tensor& q,
   std::optional<torch::Tensor> position_ids;
   if (is_prompt) {
     discrete = false;
-    if (Device::type_str() == "cuda") {
+    if (Device::type_str() == "cuda" || Device::type_str() == "npu") {
       position_ids = positions;
     }
   } else {
@@ -85,7 +88,6 @@ MRotaryEmbeddingImpl::MRotaryEmbeddingImpl(
                           rope_theta,
                           interleaved,
                           options),
-      interleaved_(interleaved),
       mrope_section_(rope_scaling_mrope_section) {
   mrope_cu_seq_lens_ = torch::zeros(2, torch::kInt32).to(options.device());
 }
@@ -104,7 +106,7 @@ void MRotaryEmbeddingImpl::forward(torch::Tensor& q,
     return RotaryEmbeddingImpl::forward(q,
                                         k,
                                         position_ids,
-                                        attn_metadata.query_start_loc,
+                                        attn_metadata.q_cu_seq_lens,
                                         attn_metadata.max_query_len,
                                         attn_metadata.is_prefill);
   }
@@ -147,7 +149,7 @@ DeepseekScalingRotaryEmbeddingImpl::DeepseekScalingRotaryEmbeddingImpl(
     : head_size_(head_size),
       rotary_dim_(rotary_dim),
       interleaved_(interleaved) {
-  auto inv_freq = xllm::rotary::apply_deepseek_yarn_rope_scaling(
+  auto inv_freq = rotary::apply_deepseek_yarn_rope_scaling(
       scaling_factor,
       extrapolation_factor,
       beta_fast,
@@ -155,16 +157,15 @@ DeepseekScalingRotaryEmbeddingImpl::DeepseekScalingRotaryEmbeddingImpl(
       rotary_dim,
       rope_theta,
       rope_scaling_original_max_position_embeddings);
-  const auto cos_sin =
-      xllm::rotary::compute_cos_sin_cache(rotary_dim,
-                                          max_position_embeddings,
-                                          interleaved,
-                                          scaling_factor,
-                                          attn_factor,
-                                          mscale,
-                                          mscale_all_dim,
-                                          inv_freq,
-                                          options);
+  const auto cos_sin = rotary::compute_cos_sin_cache(rotary_dim,
+                                                     max_position_embeddings,
+                                                     interleaved,
+                                                     scaling_factor,
+                                                     attn_factor,
+                                                     mscale,
+                                                     mscale_all_dim,
+                                                     inv_freq,
+                                                     options);
   cos_sin_cache_ = register_buffer("cos_sin_cache", cos_sin);
 
   auto cos_sin_vec = cos_sin_cache_.chunk(2, /*dim=*/-1);

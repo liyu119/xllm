@@ -104,8 +104,9 @@ bool RemoteWorker::unlink_cluster(const std::vector<uint64_t>& cluster_ids,
   return channel_->unlink_cluster(cluster_ids, addrs, device_ips, ports);
 }
 
-bool RemoteWorker::init_model(const std::string& model_weights_path) {
-  return channel_->init_model(model_weights_path);
+bool RemoteWorker::init_model(const std::string& model_weights_path,
+                              int32_t random_seed) {
+  return channel_->init_model(model_weights_path, random_seed);
 }
 
 std::tuple<int64_t, int64_t> RemoteWorker::estimate_kv_cache_capacity() {
@@ -190,14 +191,17 @@ folly::SemiFuture<folly::Unit> RemoteWorker::process_group_test_async() {
 }
 
 folly::SemiFuture<bool> RemoteWorker::init_model_async(
-    const std::string& model_weights_path) {
+    const std::string& model_weights_path,
+    int32_t random_seed) {
   folly::Promise<bool> promise;
   auto future = promise.getSemiFuture();
-  threadpool_.schedule(
-      [this, model_weights_path, promise = std::move(promise)]() mutable {
-        // call InitModel with callback
-        channel_->init_model_async(model_weights_path, promise);
-      });
+  threadpool_.schedule([this,
+                        model_weights_path,
+                        random_seed,
+                        promise = std::move(promise)]() mutable {
+    // call InitModel with callback
+    channel_->init_model_async(model_weights_path, random_seed, promise);
+  });
   return future;
 }
 
@@ -309,15 +313,15 @@ void RemoteWorker::transfer_kv_blocks(
 }
 
 void RemoteWorker::prefetch_from_storage(
-    const std::atomic<bool>& flag,
     const std::vector<BlockTransferInfo>& block_transfer_info,
-    std::shared_ptr<std::atomic<uint32_t>>& success_cnt) {
+    std::shared_ptr<std::atomic<int32_t>> flag,
+    std::shared_ptr<std::atomic<uint32_t>> success_cnt) {
   copy_threadpool_.schedule(
       [this,
-       flag = &flag,
        block_transfer_info = std::move(block_transfer_info),
+       flag = flag,
        success_cnt = success_cnt]() mutable {
-        channel_->prefetch_from_storage(flag, block_transfer_info, success_cnt);
+        channel_->prefetch_from_storage(block_transfer_info, flag, success_cnt);
       });
 }
 

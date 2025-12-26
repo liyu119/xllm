@@ -21,7 +21,8 @@ limitations under the License.
 #include <map>
 
 #include "common/global_flags.h"
-#include "core/layers/attention_mask.h"
+#include "core/layers/common/attention_mask.h"
+#include "loader/llama_decoder_loader.h"
 #include "torch_npu/csrc/core/npu/NPUCachingAllocator.h"
 #include "torch_npu/csrc/core/npu/NPUException.h"
 
@@ -30,90 +31,8 @@ namespace layer {
 
 const uint64_t WEIGHT_COUNT_PER_LAYER = 50;
 
-enum DecoderLayerTensorId : int {
-
-  IN_NORM_WEIGHT = 0,  // weight
-  IN_NORM_BIAS,        // bias
-  IN_NORM_NEW_WEIGHT,  // new weight
-  IN_NORM_NEW_BIAS,    // new bias
-
-  IN_Q_WEIGHT,    // weight
-  IN_Q_BIAS,      // bias
-  IN_Q_DEQSCALE,  // deq_scale
-  IN_Q_OFFSET,    // offset
-  IN_Q_SCALE,     // scale
-  IN_Q_COMPRESS_IDX,
-
-  IN_K_WEIGHT,    // weight
-  IN_K_BIAS,      // bias
-  IN_K_DEQSCALE,  // deq_scale
-  IN_K_OFFSET,    // offset
-  IN_K_SCALE,     // scale
-  IN_K_COMPRESS_IDX,
-
-  IN_V_WEIGHT,    // weight
-  IN_V_BIAS,      // bias
-  IN_V_DEQSCALE,  // deq_scale
-  IN_V_OFFSET,    // offset
-  IN_V_SCALE,     // scale
-  IN_V_COMPRESS_IDX,
-
-  IN_ATTENTION_OUT_WEIGHT,    // weight
-  IN_ATTENTION_OUT_BIAS,      // bias
-  IN_ATTENTION_OUT_DEQSCALE,  // deq_scale
-  IN_ATTENTION_OUT_OFFSET,    // offset
-  IN_ATTENTION_OUT_SCALE,     // scale
-  IN_ATTENTION_OUT_COMPRESS_IDX,
-
-  IN_SELFOUT_NORM_WEIGHT,      // weight
-  IN_SELFOUT_NORM_BIAS,        // bias
-  IN_SELFOUT_NORM_NEW_WEIGHT,  // new weight
-  IN_SELFOUT_NORM_NEW_BIAS,    // new bias
-
-  IN_MLP_W2_WEIGHT,    // weight
-  IN_MLP_W2_BIAS,      // bias
-  IN_MLP_W2_DEQSCALE,  // deq_scale
-  IN_MLP_W2_OFFSET,    // offset
-  IN_MLP_W2_SCALE,     // scale
-  IN_MLP_W2_COMPRESS_IDX,
-
-  IN_MLP_W1_WEIGHT,    // weight
-  IN_MLP_W1_BIAS,      // bias
-  IN_MLP_W1_DEQSCALE,  // deq_scale
-  IN_MLP_W1_OFFSET,    // offset
-  IN_MLP_W1_SCALE,     // scale
-  IN_MLP_W1_COMPRESS_IDX,
-
-  IN_MLP_CPROJ_WEIGHT,    // weight
-  IN_MLP_CPROJ_BIAS,      // bias
-  IN_MLP_CPROJ_DEQSCALE,  // deq_scale
-  IN_MLP_CPROJ_OFFSET,    // offset
-  IN_MLP_CPROJ_SCALE,     // scale
-  IN_MLP_CPROJ_COMPRESS_IDX,
-};
-
-static const std::unordered_map<std::string, int> WEIGHT_MAPPING = {
-    {"input_layernorm.weight", IN_NORM_WEIGHT},
-    {"self_attn.q_proj.weight", IN_Q_WEIGHT},
-    {"self_attn.k_proj.weight", IN_K_WEIGHT},
-    {"self_attn.v_proj.weight", IN_V_WEIGHT},
-    {"self_attn.o_proj.weight", IN_ATTENTION_OUT_WEIGHT},
-    {"post_attention_layernorm.weight", IN_SELFOUT_NORM_WEIGHT},
-    {"mlp.gate_proj.weight", IN_MLP_W2_WEIGHT},
-    {"mlp.up_proj.weight", IN_MLP_W1_WEIGHT},
-    {"mlp.down_proj.weight", IN_MLP_CPROJ_WEIGHT},
-};
-
-static std::map<int, int> WEIGHT_SHARD = {{IN_Q_WEIGHT, 0},
-                                          {IN_K_WEIGHT, 0},
-                                          {IN_V_WEIGHT, 0},
-                                          {IN_ATTENTION_OUT_WEIGHT, 1},
-                                          {IN_MLP_W2_WEIGHT, 0},
-                                          {IN_MLP_W1_WEIGHT, 0},
-                                          {IN_MLP_CPROJ_WEIGHT, 1}};
-
-NpuLlamaDecoderLayerImpl::NpuLlamaDecoderLayerImpl(const ModelContext& context)
-    : NpuBaseLayer(context) {
+LlamaDecoderLayerImpl::LlamaDecoderLayerImpl(const ModelContext& context)
+    : BaseLayer(context) {
   param_from_args(prefill_param_,
                   context.get_model_args(),
                   context.get_parallel_args(),
@@ -123,7 +42,6 @@ NpuLlamaDecoderLayerImpl::NpuLlamaDecoderLayerImpl(const ModelContext& context)
                   context.get_parallel_args(),
                   false);
 
-  at_weight_tensors_.resize(WEIGHT_COUNT_PER_LAYER);
   atb_weight_tensors_.resize(WEIGHT_COUNT_PER_LAYER);
   placeholder_vec_ = {1};
 
@@ -132,14 +50,14 @@ NpuLlamaDecoderLayerImpl::NpuLlamaDecoderLayerImpl(const ModelContext& context)
   device_id_ = options.device().index();
   placeholder_ = atb_speed::Utils::AtTensor2Tensor(
       torch::zeros({1}).to(device_).to(dtype_));
+
+  loader_ =
+      std::make_unique<LlamaDecoderLoader>(WEIGHT_COUNT_PER_LAYER, context);
   at_placeholder_ = torch::zeros({1}).to(device_).to(dtype_);
-  for (int i = 0; i < WEIGHT_COUNT_PER_LAYER; ++i) {
-    at_weight_tensors_[i] = torch::zeros({1}).to(options);
-  }
 }
 
 // fix param
-void NpuLlamaDecoderLayerImpl::param_from_args(
+void LlamaDecoderLayerImpl::param_from_args(
     atb_speed::llama::LlamaLayerParam& param,
     const ModelArgs& args,
     const ParallelArgs& parallel_args,
@@ -175,50 +93,20 @@ void NpuLlamaDecoderLayerImpl::param_from_args(
   // param.enableLogN = false;
 }
 
-void NpuLlamaDecoderLayerImpl::verify_loaded_weights() const {
-  for (const auto& [name, index] : WEIGHT_MAPPING) {
-    CHECK(at_weight_tensors_[index].sizes() != std::vector<int64_t>({1}))
-        << "weight is not loaded for " << name;
-  }
-}
+void LlamaDecoderLayerImpl::merge_loaded_weights() {
+  loader_->merge_loaded_weights();
 
-void NpuLlamaDecoderLayerImpl::merge_loaded_weights() {
-  auto new_q_weight = torch::cat({at_weight_tensors_[IN_Q_WEIGHT],
-                                  at_weight_tensors_[IN_K_WEIGHT],
-                                  at_weight_tensors_[IN_V_WEIGHT]},
-                                 0);
-  at_weight_tensors_[IN_Q_WEIGHT] = new_q_weight;
-
-  at_weight_tensors_[IN_K_WEIGHT] = torch::zeros({1}).to(device_);
-  at_weight_tensors_[IN_V_WEIGHT] = torch::zeros({1}).to(device_);
-
-  auto new_mlp_weight = torch::cat({at_weight_tensors_[IN_MLP_W2_WEIGHT],
-                                    at_weight_tensors_[IN_MLP_W1_WEIGHT]},
-                                   0);
-  at_weight_tensors_[IN_MLP_W2_WEIGHT] = new_mlp_weight;
-
-  at_weight_tensors_[IN_MLP_W1_WEIGHT] = torch::zeros({1}).to(device_);
-
+  auto& at_weight_tensors = loader_->get_at_weight_tensors();
   c10_npu::NPUCachingAllocator::emptyCache();
   for (int i = 0; i < WEIGHT_COUNT_PER_LAYER; ++i) {
     atb_weight_tensors_[i] =
-        atb_speed::Utils::AtTensor2Tensor(at_weight_tensors_[i]);
+        atb_speed::Utils::AtTensor2Tensor(at_weight_tensors[i]);
   }
 
   init_layer();
 }
 
-void NpuLlamaDecoderLayerImpl::load_state_dict(const StateDict& state_dict) {
-  for (const auto& [name, index] : WEIGHT_MAPPING) {
-    if (WEIGHT_SHARD.find(index) != WEIGHT_SHARD.end()) {
-      set_weight(state_dict, name, index, WEIGHT_SHARD[index]);
-    } else {
-      set_weight(state_dict, name, index);
-    }
-  }
-}
-
-int64_t NpuLlamaDecoderLayerImpl::init_layer() {
+int64_t LlamaDecoderLayerImpl::init_layer() {
   init_attn_mask();
   name_ = "llama_decoder_layer";
   model_name_ = "llama";
@@ -228,7 +116,7 @@ int64_t NpuLlamaDecoderLayerImpl::init_layer() {
   return atb::NO_ERROR;
 }
 
-int64_t NpuLlamaDecoderLayerImpl::init_attn_mask() {
+int64_t LlamaDecoderLayerImpl::init_attn_mask() {
   torch::Dtype dtype =
       prefill_param_.isBF16 ? torch::kBFloat16 : torch::kFloat16;
   decode_attn_mask_ = torch::zeros({1}).to(device_).to(dtype);
@@ -236,7 +124,7 @@ int64_t NpuLlamaDecoderLayerImpl::init_attn_mask() {
   return atb::NO_ERROR;
 }
 
-int64_t NpuLlamaDecoderLayerImpl::init_node(
+int64_t LlamaDecoderLayerImpl::init_node(
     atb_speed::Model::Node& node,
     atb_speed::llama::LlamaLayerParam& param) {
   atb::Operation* operation = nullptr;
@@ -268,13 +156,13 @@ int64_t NpuLlamaDecoderLayerImpl::init_node(
   return atb::NO_ERROR;
 }
 
-torch::Tensor NpuLlamaDecoderLayerImpl::forward(torch::Tensor& x,
-                                                torch::Tensor& cos_pos,
-                                                torch::Tensor& sin_pos,
-                                                torch::Tensor& attn_mask,
-                                                KVCache& kv_cache,
-                                                ModelInputParams& input_params,
-                                                int node_id) {
+torch::Tensor LlamaDecoderLayerImpl::forward(torch::Tensor& x,
+                                             torch::Tensor& cos_pos,
+                                             torch::Tensor& sin_pos,
+                                             torch::Tensor& attn_mask,
+                                             KVCache& kv_cache,
+                                             ModelInputParams& input_params,
+                                             int node_id) {
   atb::Status st;
 
   if (!input_params.batch_forward_type.is_decode()) {
@@ -307,7 +195,7 @@ torch::Tensor NpuLlamaDecoderLayerImpl::forward(torch::Tensor& x,
   return at_placeholder_;
 }
 
-void NpuLlamaDecoderLayerImpl::build_node_variant_pack(
+void LlamaDecoderLayerImpl::build_node_variant_pack(
     atb_speed::Model::Node& node,
     torch::Tensor& x,
     torch::Tensor& cos_pos,
