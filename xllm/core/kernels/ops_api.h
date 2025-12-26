@@ -85,6 +85,17 @@ std::pair<torch::Tensor, torch::Tensor> fused_recurrent_gated_delta_rule(
 
 torch::Tensor causal_conv1d_update(CausalConv1dUpdateParams& params);
 
+std::vector<torch::Tensor> grouped_matmul(GroupedMatmulParams& params);
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> moe_gating_topk_softmax(
+    MoeGatingTopkSoftmaxParams& params);
+
+torch::Tensor moe_token_unpermute(MoeTokenUnpermuteParams &params);
+
+torch::Tensor swiglu(SwigluParams &params);
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> moe_init_routing_v2(
+    MoeInitRoutingV2Params &params);
 torch::Tensor gated_layer_norm(GatedLayerNormParams& params);
 
 }  // namespace xllm::kernel
