@@ -24,7 +24,7 @@ torch::Tensor apply_npu_moe_token_unpermute(const torch::Tensor& permuted_tokens
                                             const torch::Tensor& sorted_indices, 
                                             const std::optional<torch::Tensor>& probes,
                                             bool padded_mode,
-                                            c10::OptionalArrayRef<c10::SymInt> restore_shape) {
+                                            c10::OptionalIntArrayRef restore_shape) {
     return at_npu::native::custom_ops::npu_moe_token_unpermute(permuted_tokens,
                                                                sorted_indices,
                                                                probes.value(),

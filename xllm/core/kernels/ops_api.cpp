@@ -665,7 +665,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> moe_init_
     params.offset, params.active_num, params.expert_capacity,
     params.expert_num, params.drop_pad_mode, params.expert_tokens_num_type,
     params.expert_tokens_num_flag, params.quant_mode, params.active_expert_range,
-    params.row_idx_type, params.restore_shape
+    params.row_idx_type
   );
 #else
   throw std::runtime_error("moe_init_routing_v2 not implemented");

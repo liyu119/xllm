@@ -976,7 +976,7 @@ struct MoeTokenUnpermuteParams {
   torch::Tensor sorted_indices;
   std::optional<torch::Tensor> probes;
   bool padded_mode;
-  c10::OptionalArrayRef<c10::SymInt> restore_shape;
+  c10::OptionalIntArrayRef restore_shape;
 };
 
 struct SwigluParams {
@@ -998,7 +998,6 @@ struct MoeInitRoutingV2Params {
   int quant_mode;
   torch::IntArrayRef active_expert_range;
   int row_idx_type;
-  c10::OptionalArrayRef<c10::SymInt> restore_shape;
 };
 
 struct GatedLayerNormParams {

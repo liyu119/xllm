@@ -106,7 +106,7 @@ torch::Tensor apply_npu_moe_token_unpermute(const torch::Tensor& permuted_tokens
                                             const torch::Tensor& sorted_indices,
                                             const std::optional<torch::Tensor>& probes,
                                             bool padded_mode,
-                                            c10::OptionalArrayRef<c10::SymInt> restore_shape);
+                                            c10::OptionalIntArrayRef restore_shape);
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> apply_moe_gating_topk_softmax(const torch::Tensor& x,
                                                             const std::optional<torch::Tensor>& finished,
@@ -143,7 +143,6 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> apply_npu_moe_init_ro
                                                                bool expert_tokens_num_flag,
                                                                int quant_mode,
                                                                torch::IntArrayRef active_expert_range,
-                                                               int row_idx_type,
-                                                               c10::OptionalArrayRef<c10::SymInt> restore_shape);
+                                                               int row_idx_type);
 
 }  // namespace xllm::kernel::npu
