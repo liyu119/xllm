@@ -158,6 +158,7 @@ struct ModelArgs {
   PROPERTY(bool, output_router_logits) = false;
   PROPERTY(int32_t, rope_scaling) = -1;
   PROPERTY(float, router_aux_loss_coef) = 0.001f;
+
   // qwen3 next
   PROPERTY(bool, attn_output_gate) = true;
   PROPERTY(int32_t, full_attention_interval) = 4;

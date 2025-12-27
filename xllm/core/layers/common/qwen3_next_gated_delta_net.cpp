@@ -350,8 +350,8 @@ torch::Tensor Qwen3NextGatedDeltaNetImpl::forward(
   mixed_qkv = mixed_qkv.unsqueeze(0).transpose(1,2);
   int64_t seq_len = mixed_qkv.size(2); 
   // 3. core attention
-  // torch::Tensor conv_cache = kv_cache.get_conv_cache();
-  // torch::Tensor ssm_cache = kv_cache.get_ssm_cache();
+   torch::Tensor conv_cache = kv_cache.get_conv_cache();
+   torch::Tensor ssm_cache = kv_cache.get_ssm_cache();
   if (attn_metadata.is_prefill) {
     auto device = mixed_qkv.device();
     auto conv_weight = conv1d_->weight().unsqueeze(1).to(device); 
@@ -423,10 +423,11 @@ torch::Tensor Qwen3NextGatedDeltaNetImpl::forward(
 
     xllm::kernel::CausalConv1dUpdateParams params;
     params.x = mixed_qkv;
-    params.conv_state = torch::Tensor();
+    params.conv_state = conv_cache;
     params.weight = conv_weight;
     params.bias = torch::Tensor();
     params.activation = true;
+    params.conv_state_indices = attn_metadata.block_table.slice(1,0,1);
     mixed_qkv = xllm::kernel::causal_conv1d_update(params);
 
     std::cerr << "[DECODE] after mixed_qkv - Device: " << mixed_qkv.device()
@@ -468,9 +469,9 @@ torch::Tensor Qwen3NextGatedDeltaNetImpl::forward(
     recurrent_gated_params.scale = 1.0f;
     recurrent_gated_params.use_qk_l2norm_in_kernel = false;
     recurrent_gated_params.inplace_final_state = true;
-    recurrent_gated_params.initial_state = torch::zeros({1,8,128,128}).to(device);
+    recurrent_gated_params.initial_state = ssm_cache;
     recurrent_gated_params.cu_seqlens = attn_metadata.query_start_loc;
-    recurrent_gated_params.ssm_state_indices = attn_metadata.block_table.slice(1,0,1)
+    recurrent_gated_params.ssm_state_indices = attn_metadata.block_table.slice(1,0,1);
     recurrent_gated_params.num_accepted_tokens = torch::Tensor();
     auto [core_attn_out, last_recurrent_state] = xllm::kernel::fused_recurrent_gated_delta_rule(recurrent_gated_params);
   }

@@ -155,6 +155,12 @@ bool LLMEngine::init_model() {
   head_dim_ = args_.head_dim();
   dtype_ = util::parse_dtype(args_.dtype(), options_.devices()[0]);
 
+  if (args_.full_attention_interval() > 1) {
+    const int64_t linear_n_k_heads = args_.linear_num_key_heads();
+    const int64_t linear_n_v_heads = args_.linear_num_value_heads();
+    n_local_linear_k_heads_ = std::max<int64_t>(1, linear_n_k_heads / world_size);
+    n_local_linear_v_heads_ = std::max<int64_t>(1, linear_n_v_heads / world_size);
+  }
   // key + value for all layers
   LOG(INFO) << "Block info, block_size: " << options_.block_size()
             << ", n_local_kv_heads: " << n_local_kv_heads_
@@ -254,6 +260,7 @@ Engine::KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
   const int64_t dtype_size = torch::scalarTypeToTypeMeta(dtype_).itemsize();
   int64_t slot_size = 0;
   int64_t index_slot_size = 0;
+  int64_t linear_slot_size = 0;
   if (FLAGS_enable_mla) {
     slot_size = dtype_size * (args_.kv_lora_rank() + args_.qk_rope_head_dim());
   } else {
@@ -263,15 +270,23 @@ Engine::KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
     int index_n_head = 1;
     index_slot_size = dtype_size * index_n_head * args_.index_head_dim();
   }
+  if (args_.linear_num_value_heads() > 0) {
+    int64_t head_k_dim = args_.linear_value_head_dim();
+    int64_t head_v_dim = args_.linear_key_head_dim();
+    linear_ssm_slot_size = dtype_size * n_local_linear_v_heads_ * head_k_dim * head_v_dim;
+    linear_conv_slot_size = dtype_size * (head_k_dim * n_local_linear_k_heads_ * 2 + head_v_dim * n_local_linear_v_heads_) * (args_.linear_conv_kernel_dim() -1 );
+    linear_slot_size = linear_ssm_slot_size + linear_conv_slot_size;
+  }
   kv_cache_cap.slot_size = slot_size;
   kv_cache_cap.index_slot_size = index_slot_size;
+  kv_cache_cap.linear_slot_size = linear_slot_size;
   kv_cache_cap.n_layers = args_.n_layers();
 
   if (!FLAGS_enable_continuous_kvcache) {
     // compute kv cache n_blocks
     const int32_t block_size = options_.block_size();
     const int64_t block_size_in_bytes =
-        block_size * (slot_size + index_slot_size);
+        block_size * (slot_size + index_slot_size + linear_slot_size);
     kv_cache_cap.n_blocks = kv_cache_cap.cache_size_in_bytes /
                             (args_.n_layers() * block_size_in_bytes);
     CHECK_GT(kv_cache_cap.n_blocks, 0) << "no n_blocks for kv cache";
@@ -299,6 +314,7 @@ bool LLMEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
   CHECK_GT(kv_cache_cap.n_blocks, 0) << "no memory for kv cache";
   const int32_t block_size = options_.block_size();
   bool enable_lighting_indexer = args_.index_n_heads() > 1;
+  bool enable_linear_attention = args_.full_attention_interval() > 1;
 
   // init kv cache for each worker
   std::vector<std::vector<int64_t>> kv_cache_shape;
@@ -317,6 +333,16 @@ bool LLMEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
   if (enable_lighting_indexer) {
     kv_cache_shape.emplace_back(std::vector<int64_t>{
         kv_cache_cap.n_blocks, block_size, 1, args_.index_head_dim()});
+  }
+  if (enable_linear_attention) {
+    kv_cache_shape.emplace_back(std::vector<int64_t>{
+        kv_cache_cap.n_blocks, block_size, n_local_linear_v_heads_, args_.linear_key_head_dim(),
+         args_.linear_key_head_dim()});
+
+    kv_cache_shape.emplace_back(std::vector<int64_t>{
+        kv_cache_cap.n_blocks, block_size, args_.linear_conv_kernel_dim() - 1,
+        args_.linear_key_head_dim() * n_local_linear_k_heads_ * 2 +
+        args_.linear_key_head_dim() * n_local_linear_v_heads_});
   }
 #if defined(USE_MLU)
   // transpose kv_cache layout for mlu

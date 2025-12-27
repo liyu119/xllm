@@ -90,9 +90,10 @@ bool WorkerImpl::allocate_kv_cache(
   const int64_t num_layers = context_.get_model_args().n_layers();
   const bool enable_lighting_indexer =
       context_.get_model_args().index_n_heads() > 0;
+  const bool enable_linear_attention = context_.get_model_args().full_attention_interval() > 1;
   kv_caches_.reserve(num_layers);
   for (int64_t i = 0; i < num_layers; ++i) {
-    torch::Tensor key_cache, value_cache, index_cache;
+    torch::Tensor key_cache, value_cache, index_cache, conv_cache, ssm_cache;
 #if defined(USE_NPU)
     key_cache = at_npu::native::npu_format_cast(
         torch::empty(kv_cache_shape[0], torch::dtype(dtype_).device(device_)),
@@ -103,6 +104,14 @@ bool WorkerImpl::allocate_kv_cache(
     if (enable_lighting_indexer) {
       index_cache = at_npu::native::npu_format_cast(
           torch::empty(kv_cache_shape[2], torch::dtype(dtype_).device(device_)),
+          2);
+    }
+    if (enable_linear_attention) {
+      conv_cache = at_npu::native::npu_format_cast(
+          torch::empty(kv_cache_shape[3], torch::dtype(dtype_).device(device_)),
+          2);
+      ssm_cache = at_npu::native::npu_format_cast(
+          torch::empty(kv_cache_shape[4], torch::dtype(dtype_).device(device_)),
           2);
     }
 #else
@@ -117,7 +126,7 @@ bool WorkerImpl::allocate_kv_cache(
           torch::empty(kv_cache_shape[2], torch::dtype(dtype_).device(device_));
     }
 #endif
-    kv_caches_.emplace_back(key_cache, value_cache, index_cache);
+    kv_caches_.emplace_back(key_cache, value_cache, index_cache, conv_cache, ssm_cache);
   }
 
   init_hierarchy_kv_cache_transfer();
