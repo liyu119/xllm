@@ -195,24 +195,20 @@ torch::Tensor FusedMoEImpl::select_experts(
   auto [topk_weights, topk_ids, row_ids] = xllm::kernel::moe_gating_topk_softmax(gating_topk_params);
   topk_ids = topk_ids.to(torch::kFloat32);
   if (renormalize) {
-    topk_weights = topk_weights / (topk_weights.sum(dim=-1, true) + 1e-6);
+    topk_weights = topk_weights / (topk_weights.sum(-1, true) + 1e-6);
   }
 
-  xllm::kernel::MoeInitRoutingParams moe_init_routing_params;
-  moe_init_routing_params.hidden_states = hidden_states_2d;
-  moe_init_routing_params.topk_ids = topk_ids;
+  xllm::kernel::MoeInitRoutingV2Params moe_init_routing_params;
+  moe_init_routing_params.x = hidden_states_2d;
+  moe_init_routing_params.expert_idx = topk_ids;
   moe_init_routing_params.active_num = hidden_states_2d.size(0) * top_k;
   moe_init_routing_params.expert_num = num_experts_per_rank_;
   moe_init_routing_params.expert_tokens_num_type = 1;
   moe_init_routing_params.expert_tokens_num_type = true;
   moe_init_routing_params.active_expert_range = [start_expert_id_, start_expert_id_ + num_experts_per_rank_];
   moe_init_routing_params.quant_mode = -1;
-  auto [expand_hidden_states, expand_row_ids, group_list, dynamic_scale] = xllm::kernel::moe_init_routing(
+  auto [expand_hidden_states, expand_row_ids, group_list, dynamic_scale] = xllm::kernel::moe_init_routing_v2(
     moe_init_routing_params)
-
-  if (renormalize) {
-    selected_weights = selected_weights / (selected_weights.sum(dim=-1, true) + 1e-6);
-  }
     // collect the selected tensor
   selected_expert_info.reduce_weight = topk_weights;
   selected_expert_info.combine_idx = expand_row_ids;
