@@ -41,11 +41,11 @@ Qwen3NextDecoderImpl::Qwen3NextDecoderImpl(const ModelContext& context,
   // Initialize norm layers
   input_norm_ = register_module(
       "input_layernorm",
-      RmsNorm(model_args.hidden_size(), model_args.rms_norm_eps(), options));
+      Qwen3NextRMSNorm(model_args.hidden_size(), model_args.rms_norm_eps(), options));
 
   post_norm_ = register_module(
       "post_attention_layernorm",
-      RmsNorm(model_args.hidden_size(), model_args.rms_norm_eps(), options));
+      Qwen3NextRMSNorm(model_args.hidden_size(), model_args.rms_norm_eps(), options));
 
   // Initialize mlp
   auto mlp_only_layers = model_args.mlp_only_layers();

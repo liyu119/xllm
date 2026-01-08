@@ -312,30 +312,37 @@ torch::Tensor FusedMoEImpl::select_experts(
 #if defined(USE_NPU)
   xllm::kernel::MoeGatingTopkSoftmaxParams gating_topk_params;
   gating_topk_params.x = router_logits_2d;
-  gating_topk_params.k = top_k;
+  gating_topk_params.finished = torch::Tensor();
+  gating_topk_params.k = topk_;
   auto [topk_weights, topk_ids, row_ids] = xllm::kernel::moe_gating_topk_softmax(gating_topk_params);
-  topk_ids = topk_ids.to(torch::kFloat32);
-  if (renormalize) {
+  topk_ids = topk_ids.to(torch::kInt32);
+  if (renormalize_) {
     topk_weights = topk_weights / (topk_weights.sum(-1, true) + 1e-6);
   }
 
+  std::cerr << "MOE11" << std::endl;
   xllm::kernel::MoeInitRoutingV2Params moe_init_routing_params;
   moe_init_routing_params.x = hidden_states_2d;
   moe_init_routing_params.expert_idx = topk_ids;
-  moe_init_routing_params.active_num = hidden_states_2d.size(0) * top_k;
+  moe_init_routing_params.scale = std::nullopt;
+  moe_init_routing_params.offset = std::nullopt;
+  moe_init_routing_params.active_num = hidden_states_2d.size(0) * topk_;
   moe_init_routing_params.expert_num = num_experts_per_rank_;
   moe_init_routing_params.expert_tokens_num_type = 1;
   moe_init_routing_params.expert_tokens_num_type = true;
-  moe_init_routing_params.active_expert_range = [start_expert_id_, start_expert_id_ + num_experts_per_rank_];
+  std::vector<int64_t> expert_range = {start_expert_id_, start_expert_id_ + num_experts_per_rank_};
+  moe_init_routing_params.active_expert_range = expert_range;
   moe_init_routing_params.quant_mode = -1;
   auto [expand_hidden_states, expand_row_ids, group_list, dynamic_scale] = xllm::kernel::moe_init_routing_v2(
-    moe_init_routing_params)
+    moe_init_routing_params);
+
+  std::cerr << "MOE12" << std::endl;
     // collect the selected tensor
   selected_expert_info.reduce_weight = topk_weights;
   selected_expert_info.combine_idx = expand_row_ids;
   selected_expert_info.token_count_slice = group_list;
   selected_expert_info.cusum_token_count = group_list;
-  
+
 #else
   std::optional<torch::Tensor> e_score_correction_bias = std::nullopt;
   if (e_score_correction_bias_.defined()) {
@@ -547,16 +554,23 @@ torch::Tensor FusedMoEImpl::forward_experts(const torch::Tensor& hidden_states,
                                hidden_states_dtype,
                                gemm_workspace);
 
-#if defined(USE_NPU) 
+#if defined(USE_NPU)
   {
     xllm::kernel::GroupedMatmulParams grouped_matmul_params;
     grouped_matmul_params.x = expand_hidden_states;
-    grouped_matmul_params.weights = w13_;
+    if (w13_.size(1) != expand_hidden_states.size(1)) {
+      w13_ = w13_.transpose(1, 2);
+    }
+    grouped_matmul_params.weight = w13_;
     grouped_matmul_params.split_item = 2;
+    grouped_matmul_params.group_type = 0;
     grouped_matmul_params.group_list_type = 1;
     grouped_matmul_params.group_list = selected_expert_info.token_count_slice;
-    gemm1_out = xllm::kernel::grouped_matmul(grouped_matmul_params);
-  } 
+    std::cerr << "[INFO]w13_ shape" << w13_.sizes() << std::endl;
+    std::cerr << "[INFO]x_ shape" << expand_hidden_states.sizes() << std::endl;
+    gemm1_out = xllm::kernel::grouped_matmul(grouped_matmul_params).back();
+    std::cerr << "MOE3" << std::endl;
+  }
 #else
   // ensure the lifespan of these parameters via brace
   {
@@ -592,6 +606,7 @@ torch::Tensor FusedMoEImpl::forward_experts(const torch::Tensor& hidden_states,
   activation_params.input = gemm1_out;
   activation_params.act_mode = "swiglu";
   act_out = xllm::kernel::active_tensor(activation_params);
+  std::cerr << "MOE4" << std::endl;
 #else
   if (is_smoothquant_) {
     int64_t slice_dim = gemm1_out.size(1);
@@ -638,17 +653,23 @@ torch::Tensor FusedMoEImpl::forward_experts(const torch::Tensor& hidden_states,
                                hidden_states_dtype,
                                gemm_workspace);
 
-#if defined(USE_NPU) 
+#if defined(USE_NPU)
   {
     xllm::kernel::GroupedMatmulParams grouped_matmul_params;
     grouped_matmul_params.x = act_out;
-    grouped_matmul_params.weights = w2;
+    if (w2_.size(1) != act_out.size(1)) {
+      w2_ = w2_.transpose(1, 2);
+    }
+    grouped_matmul_params.weight = w2_;
     grouped_matmul_params.split_item = 2;
     grouped_matmul_params.group_list_type = 1;
     grouped_matmul_params.group_type = 0;
     grouped_matmul_params.group_list = selected_expert_info.token_count_slice;
-    gemm2_out = xllm::kernel::grouped_matmul(grouped_matmul_params);
-  } 
+    std::cerr << "[INFO]w2_ shape" << w2_.sizes() << std::endl;
+    std::cerr << "[INFO]x_ shape" << act_out.sizes() << std::endl;
+    gemm2_out = xllm::kernel::grouped_matmul(grouped_matmul_params).back();
+    std::cerr << "MOE5" << std::endl;
+  }
 #else
   // ensure the lifespan of these parameters via brace
   {
@@ -718,8 +739,10 @@ torch::Tensor FusedMoEImpl::forward_experts(const torch::Tensor& hidden_states,
     xllm::kernel::MoeTokenUnpermuteParams moe_token_unpermute_params;
     moe_token_unpermute_params.permuted_tokens = gemm2_out;
     moe_token_unpermute_params.sorted_indices = selected_expert_info.combine_idx;
+    moe_token_unpermute_params.padded_mode = false;
     moe_token_unpermute_params.probes = selected_expert_info.reduce_weight;
     final_hidden_states = xllm::kernel::moe_token_unpermute(moe_token_unpermute_params);
+    std::cerr << "MOE6" << std::endl;
     if (shared_output.has_value()) {
       final_hidden_states = final_hidden_states + shared_output.value();
     }

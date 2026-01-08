@@ -23,6 +23,7 @@ limitations under the License.
 #include "framework/parallel_state/parallel_args.h"
 #include "framework/quant_args.h"
 #include "framework/state_dict/state_dict.h"
+#include "framework/state_dict/utils.h"
 #include "linear.h"
 #include "rms_norm_gated.h"
 
@@ -63,17 +64,18 @@ class Qwen3NextGatedDeltaNetImpl : public torch::nn::Module {
   int64_t head_v_dim_;
   int64_t k_size_;
   int64_t v_size_;
-  int64_t tp_size_; 
-  torch::Tensor dt_bias_;
-  torch::Tensor A_log_;
+  int64_t rank_;
+  int64_t tp_size_;
 
   ColumnParallelLinear qkvz_proj_{nullptr};
   ColumnParallelLinear ba_proj_{nullptr};
   ColumnParallelLinear conv1d_{nullptr};
 
   RowParallelLinear o_proj_{nullptr};
-
   RmsNormGated norm_{nullptr};
+
+  DEFINE_WEIGHT(dt_bias);
+  DEFINE_WEIGHT(A_log);
 };
 TORCH_MODULE(Qwen3NextGatedDeltaNet);
 

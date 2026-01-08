@@ -13,37 +13,33 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "rms_norm_gated.h"
+#include "qwen3_next_rms_norm.h"
 
 #include <glog/logging.h>
-
-#include "framework/state_dict/utils.h"
-#include "xllm/core/kernels/ops_api.h"
 
 namespace xllm {
 namespace layer {
 
-RmsNormGatedImpl::RmsNormGatedImpl(int64_t dim,
+Qwen3NextRMSNormImpl::Qwen3NextRMSNormImpl(int64_t dim,
                                    double eps,
                                    const torch::TensorOptions& options)
     : norm_dim_(dim), eps_(eps) {
   weight_ = register_parameter("weight", torch::empty({dim}, options), /*requires_grad=*/false);
 }
 
-torch::Tensor RmsNormGatedImpl::forward(torch::Tensor& input, std::optional<torch::Tensor> gate) {
-  xllm::kernel::GatedLayerNormParams params;
-  params.x = input;
-  params.weight = weight_;
-  static torch::Tensor dummy_bias = torch::empty({0});
-  params.bias = dummy_bias;
-  params.eps = eps_;
-  params.z = gate;
-  params.group_size = input.sizes(-1);
-  params.is_rms_norm = true;  
-  return xllm::kernel::gated_layer_norm(params);
+torch::Tensor Qwen3NextRMSNormImpl::forward(torch::Tensor& input) {
+  auto input_dtype = input.dtype();
+  input = input.to(torch::kFloat32);
+  
+  // Calculate RMS
+  auto variance = torch::mean(torch::pow(input, 2), -1, true);
+  auto normalized = input * torch::rsqrt(variance + eps_);
+  
+  // Apply weight and convert back to original dtype
+  return (normalized * (1.0f + weight_.to(torch::kFloat32))).to(input_dtype);
 }
 
-void RmsNormGatedImpl::load_state_dict(const StateDict& state_dict) {
+void Qwen3NextRMSNormImpl::load_state_dict(const StateDict& state_dict) {
   LOAD_WEIGHT(weight);
 }
 

@@ -16,28 +16,37 @@ limitations under the License.
 #pragma once
 
 #include <torch/torch.h>
-#include <optional>
-#include "framework/state_dict/state_dict.h"
-#include "framework/state_dict/utils.h"
+#include <torch/types.h>
+
+#include <memory>
 
 namespace xllm {
 namespace layer {
-
-class RmsNormGatedImpl : public torch::nn::Module {
+class PartialRotaryEmbeddingImpl : public torch::nn::Module {
  public:
-  RmsNormGatedImpl(int64_t dim,
-                   double eps,
-                   const torch::TensorOptions& options);
+  PartialRotaryEmbeddingImpl(int64_t rotary_dim,
+                             int64_t max_position_embeddings,
+                             int64_t rope_theta,
+                             int64_t head_size,
+                             bool is_neox_style,
+                             bool interleaved,
+                             const torch::TensorOptions& options);
 
-  torch::Tensor forward(torch::Tensor& input,std::optional<torch::Tensor> gate = torch::nullopt);
+  void forward(const torch::Tensor& positions,
+               torch::Tensor& q,
+               torch::Tensor& k);
 
-  void load_state_dict(const StateDict& state_dict);
+  torch::Tensor get_cos_sin_cache() { return cos_sin_cache_; }
 
  private:
-  DEFINE_WEIGHT(weight);
-  int64_t norm_dim_;
-  double eps_;
+  int64_t head_size_;
+  int64_t rotary_dim_;
+  bool is_neox_style_;
+  bool interleaved_;
+  torch::Tensor cos_sin_cache_;
 };
-TORCH_MODULE(RmsNormGated);
+TORCH_MODULE(PartialRotaryEmbedding);
+
 }  // namespace layer
 }  // namespace xllm
+

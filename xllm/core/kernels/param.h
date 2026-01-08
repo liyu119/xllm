@@ -206,8 +206,6 @@ struct AttentionParams {
   torch::Tensor float_workspace_buffer;
   torch::Tensor int_workspace_buffer;
   torch::Tensor page_locked_int_workspace_buffer;
-  std::string uri;
-  torch::Tensor plan_info;
 
   bool enable_cuda_graph = false;
   // Whether to use tensor core for decode attention computation. Default: true.
@@ -1001,14 +999,24 @@ struct MoeInitRoutingV2Params {
 };
 
 struct GatedLayerNormParams {
-  torch::Tensor& x;
-  torch::Tensor& weight;
-  torch::Tensor& bias;
+  torch::Tensor x;
+  torch::Tensor weight;
+  torch::Tensor bias;
   double eps;
-  std::optional<torch::Tensor>& z = std::nullopt;
+  std::optional<torch::Tensor> z = std::nullopt;
   int64_t group_size = -1;
   bool norm_before_gate = true;
-  bool is_rms_norm = false;
+  bool is_rms_norm = true;
+};
+
+struct PartialRotaryEmbedding {
+  torch::Tensor positions;
+  torch::Tensor query;
+  torch::Tensor key;
+  int64_t head_size;
+  int64_t rotary_dim;
+  torch::Tensor cos_sin_cache;
+  bool is_neox_style;
 };
 
 }  // namespace xllm::kernel

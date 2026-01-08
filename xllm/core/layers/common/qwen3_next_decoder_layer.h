@@ -26,9 +26,9 @@ limitations under the License.
 #include "framework/model_context.h"
 #include "framework/state_dict/state_dict.h"
 #include "fused_moe.h"
-#include "layers/rms_norm.h"
 #include "qwen3_next_attention.h"
 #include "qwen3_next_gated_delta_net.h"
+#include "qwen3_next_rms_norm.h"
 
 namespace xllm {
 namespace layer {
@@ -54,8 +54,8 @@ class Qwen3NextDecoderImpl : public torch::nn::Module {
   DenseMLP mlp_{nullptr};
   FusedMoE moe_mlp_{nullptr};
 
-  RmsNorm input_norm_{nullptr};
-  RmsNorm post_norm_{nullptr};
+  Qwen3NextRMSNorm input_norm_{nullptr};
+  Qwen3NextRMSNorm post_norm_{nullptr};
 };
 
 }  // namespace layer
