@@ -44,11 +44,11 @@ limitations under the License.
 namespace xllm {
 namespace layer {
 
-class Qwen2DecoderLayerImpl : public BaseLayer {
+class NpuQwen2DecoderLayerImpl : public BaseLayer {
  public:
-  explicit Qwen2DecoderLayerImpl(const ModelContext& context);
+  explicit NpuQwen2DecoderLayerImpl(const ModelContext& context);
 
-  ~Qwen2DecoderLayerImpl() {};
+  ~NpuQwen2DecoderLayerImpl() override = default;
 
   virtual void merge_loaded_weights() override;
 
@@ -65,11 +65,7 @@ class Qwen2DecoderLayerImpl : public BaseLayer {
                         int node_id = 0);
 
  private:
-  TransposeType check_transpose(at::Tensor& tensor);
-
   void initialize_quantization_parameters();
-
-  void initialize_linear_transpose_type();
 
   void build_node_variant_pack(atb_speed::Model::Node& node,
                                torch::Tensor& x,
@@ -110,6 +106,7 @@ class Qwen2DecoderLayerImpl : public BaseLayer {
   std::vector<std::shared_ptr<std::vector<int>>> prefill_vector_storage_;
   std::vector<std::shared_ptr<std::vector<int>>> decode_vector_storage_;
 };
+TORCH_MODULE(NpuQwen2DecoderLayer);
 
 }  // namespace layer
 }  // namespace xllm

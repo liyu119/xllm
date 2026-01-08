@@ -15,13 +15,9 @@ limitations under the License.
 
 #pragma once
 
-#include <glog/logging.h>
-
-#include <boost/algorithm/string.hpp>
-
 #include "core/framework/model/npu_dp_ep_padding.h"
 #include "core/framework/model_context.h"
-#include "core/layers/qwen3_moe_decoder_layer.h"
+#include "core/layers/npu/npu_qwen3_moe_decoder_layer_impl.h"
 #include "llm_model_base.h"
 
 namespace xllm {
@@ -33,8 +29,8 @@ class Qwen3MoeDecoderLayerImpl : public torch::nn::Module {
  public:
   Qwen3MoeDecoderLayerImpl(const ModelContext& context, const int32_t i) {
     // register submodules
-    decoder_layer_ = register_module("decoder_layer",
-                                     layer::Qwen3MoeDecoderLayer(context, i));
+    decoder_layer_ = register_module(
+        "decoder_layer", layer::NpuQwen3MoeDecoderLayer(context, i));
   }
 
   torch::Tensor forward(torch::Tensor x,
@@ -43,7 +39,6 @@ class Qwen3MoeDecoderLayerImpl : public torch::nn::Module {
                         torch::Tensor attn_mask,
                         KVCache& kv_cache,
                         const ModelInputParams& input_params,
-                        torch::Tensor expert_array,
                         aclrtEvent* event = nullptr,
                         std::atomic<bool>* event_flag = nullptr) {
     return decoder_layer_(x,
@@ -52,7 +47,6 @@ class Qwen3MoeDecoderLayerImpl : public torch::nn::Module {
                           attn_mask,
                           kv_cache,
                           input_params,
-                          expert_array,
                           event,
                           event_flag);
   }
@@ -106,7 +100,7 @@ class Qwen3MoeDecoderLayerImpl : public torch::nn::Module {
   void merge_loaded_weights() { decoder_layer_->merge_loaded_weights(); }
 
  private:
-  layer::Qwen3MoeDecoderLayer decoder_layer_{nullptr};
+  layer::NpuQwen3MoeDecoderLayer decoder_layer_{nullptr};
 };
 TORCH_MODULE(Qwen3MoeDecoderLayer);
 
@@ -124,21 +118,20 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
     device_ = options.device();
     dtype_ = options.dtype().toScalarType();
     num_speculative_tokens_ = model_args.num_speculative_tokens();
-    embed_tokens_ =
-        register_module("embed_tokens", layer::WordEmbedding(context));
-
+    npu_embed_tokens_ =
+        register_module("npu_embed_tokens", layer::NpuWordEmbedding(context));
     cos_sin_ = layer::rotary::get_concat_rotary_embedding(
         128,
         model_args.max_position_embeddings(),
         model_args.rope_theta(),
         options);
 
-    atb_pos_emb_ = layer::PosEmbedding(context);
+    atb_pos_emb_ = layer::NpuPosEmbedding(context);
     int32_t mask_value = FLAGS_enable_chunked_prefill ? -9984 : 1;
     attn_mask_ = layer::AttentionMask(options.device(),
                                       options.dtype().toScalarType(),
                                       /*mask_value=*/mask_value);
-    norm_ = register_module("norm", layer::RMSNorm(context));
+    norm_ = register_module("norm", layer::NpuRMSNorm(context));
     mapping_data_ = parallel_args.mapping_data();
 
     for (int32_t i = 0; i < model_args.n_layers(); ++i) {
@@ -185,7 +178,7 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
     if (inputs_embeds.defined()) {
       h = inputs_embeds;
     } else {
-      h = embed_tokens_(tokens, 0);
+      h = npu_embed_tokens_(tokens, 0);
     }
 
     auto target_cos_sin = atb_pos_emb_(cos_sin_, positions, 0);
@@ -219,30 +212,33 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
     }
 
     torch::Tensor attn_mask;
-    max_seq_len_ = FLAGS_enable_chunked_prefill
-                       ? std::max(input_params.kv_max_seq_len, max_seq_len_)
-                       : 128;
-    if (FLAGS_enable_chunked_prefill) {
-      attn_mask = attn_mask_.get_attn_mask(
-          max_seq_len_, cos_pos.dtype().toScalarType(), cos_pos.device());
+    // for chunked prefill, generate the attn mask.
+    if (!input_params.batch_forward_type.is_decode()) {
+      max_seq_len_ = FLAGS_enable_chunked_prefill
+                         ? std::max(input_params.kv_max_seq_len, max_seq_len_)
+                         : 128;
+      if (FLAGS_enable_chunked_prefill) {
+        attn_mask = attn_mask_.get_attn_mask(
+            max_seq_len_, cos_pos.dtype().toScalarType(), cos_pos.device());
 
-      int batch_size = input_params.q_seq_lens_vec.size();
-      if (batch_size > 0) {
-        std::vector<torch::Tensor> req_mask_vec;
-        req_mask_vec.reserve(batch_size);
+        int batch_size = input_params.q_seq_lens_vec.size();
+        if (batch_size > 0) {
+          std::vector<torch::Tensor> req_mask_vec;
+          req_mask_vec.reserve(batch_size);
 
-        for (int j = 0; j < batch_size; j++) {
-          int start =
-              input_params.kv_seq_lens_vec[j] - input_params.q_seq_lens_vec[j];
-          int end = input_params.kv_seq_lens_vec[j];
+          for (int j = 0; j < batch_size; j++) {
+            int start = input_params.kv_seq_lens_vec[j] -
+                        input_params.q_seq_lens_vec[j];
+            int end = input_params.kv_seq_lens_vec[j];
 
-          auto req_mask_slice = attn_mask.slice(0, start, end);
-          req_mask_vec.emplace_back(req_mask_slice);
+            auto req_mask_slice = attn_mask.slice(0, start, end);
+            req_mask_vec.emplace_back(req_mask_slice);
+          }
+          attn_mask = torch::cat(req_mask_vec, 0);
         }
-        attn_mask = torch::cat(req_mask_vec, 0);
+      } else if (input_params.global_empty_kv_cache) {
+        attn_mask = attn_mask_.get_attn_mask(max_seq_len_, dtype_, device_);
       }
-    } else if (input_params.global_empty_kv_cache) {
-      attn_mask = attn_mask_.get_attn_mask(max_seq_len_, dtype_, device_);
     }
     auto deep_stacks = input_params.deep_stacks;
     int deep_stack_size = deep_stacks.size();
@@ -252,6 +248,10 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
         0,
         input_length * num_experts_per_tok_,
         torch::TensorOptions().dtype(torch::kInt32).device(tokens.device()));
+    ModelInputParams& input_params_new =
+        const_cast<ModelInputParams&>(input_params);
+    input_params_new.expert_array = expert_array;
+
     for (size_t i = 0; i < layers_.size(); i++) {
       aclrtEvent* event = nullptr;
       std::atomic<bool>* event_flag = nullptr;
@@ -270,7 +270,6 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
             attn_mask,
             kv_caches[i],
             input_params,
-            expert_array,
             event,
             event_flag);
       if (deep_stack_size && i < deep_stack_size) {
@@ -282,7 +281,7 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
 
   // load the weight from the checkpoint
   void load_state_dict(const StateDict& state_dict) {
-    embed_tokens_->load_state_dict(
+    npu_embed_tokens_->load_state_dict(
         state_dict.get_dict_with_prefix("embed_tokens."));
     // call each layer's load_state_dict function
     for (int i = 0; i < layers_.size(); i++) {
@@ -293,7 +292,7 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
   }
 
   void verify_loaded_weights(const std::string& prefix) const {
-    embed_tokens_->verify_loaded_weights(prefix + "embed_tokens.");
+    npu_embed_tokens_->verify_loaded_weights(prefix + "embed_tokens.");
     for (int i = 0; i < layers_.size(); i++) {
       layers_[i]->verify_loaded_weights(prefix + "layers." + std::to_string(i) +
                                         ".");
@@ -302,20 +301,20 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
   }
 
   void merge_loaded_weights() {
-    embed_tokens_->merge_loaded_weights();
+    npu_embed_tokens_->merge_loaded_weights();
     for (int i = 0; i < layers_.size(); i++) {
       layers_[i]->merge_loaded_weights();
     }
     norm_->merge_loaded_weights();
   }
 
-  layer::WordEmbedding get_word_embedding() { return embed_tokens_; }
+  layer::NpuWordEmbedding get_npu_word_embedding() { return npu_embed_tokens_; }
 
-  void set_word_embedding(layer::WordEmbedding& word_embedding) {
-    embed_tokens_ = word_embedding;
+  void set_npu_word_embedding(layer::NpuWordEmbedding& npu_word_embedding) {
+    npu_embed_tokens_ = npu_word_embedding;
   }
   torch::Tensor get_input_embeddings(torch::Tensor input_ids) {
-    return embed_tokens_(input_ids, 0);
+    return npu_embed_tokens_(input_ids, 0);
   }
 
  private:
@@ -331,80 +330,19 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
   int32_t num_speculative_tokens_ = 0;
   at::Device device_;
   torch::Dtype dtype_;
-  layer::WordEmbedding embed_tokens_{nullptr};
+  layer::NpuWordEmbedding npu_embed_tokens_{nullptr};
   layer::AttentionMask attn_mask_;
-  layer::RMSNorm norm_{nullptr};
+  layer::NpuRMSNorm norm_{nullptr};
   torch::Tensor cos_sin_;
-  layer::PosEmbedding atb_pos_emb_{nullptr};
+  layer::NpuPosEmbedding atb_pos_emb_{nullptr};
   std::vector<int64_t> mrope_section_;
 };
 TORCH_MODULE(Qwen3MoeModel);
 
-class Qwen3MoeForCausalLMImpl : public torch::nn::Module {
+class Qwen3MoeForCausalLMImpl : public LlmForCausalLMImplBase<Qwen3MoeModel> {
  public:
-  Qwen3MoeForCausalLMImpl(const ModelContext& context) {
-    model_ = register_module("model", Qwen3MoeModel(context));
-    lm_head_ = register_module("lm_head", layer::LmHead(context));
-  }
-
-  // tokens: [num_tokens]
-  // positions: [num_tokens] token pos in the sequence
-  // returns: [num_tokens, hidden_size]
-  torch::Tensor forward(const torch::Tensor& tokens,
-                        const torch::Tensor& positions,
-                        std::vector<KVCache>& kv_caches,
-                        const ModelInputParams& input_params) {
-    return model_(tokens, positions, kv_caches, input_params);
-  }
-
-  // hidden_states: [num_tokens, hidden_size]
-  // seleted_idxes: [num_tokens]
-  // returns: [num_tokens, vocab_size]
-  torch::Tensor logits(const torch::Tensor& hidden_states,
-                       const torch::Tensor& seleted_idxes) {
-    return lm_head_(hidden_states, seleted_idxes, 0);
-  }
-
-  torch::Tensor get_input_embeddings(torch::Tensor input_ids) {
-    return model_->get_input_embeddings(input_ids);
-  }
-
-  void load_model(std::unique_ptr<ModelLoader> loader,
-                  std::string prefix = "model." /*llm model weight prefix*/) {
-    for (const auto& state_dict : loader->get_state_dicts()) {
-      model_->load_state_dict(state_dict->get_dict_with_prefix(prefix));
-      lm_head_->load_state_dict(state_dict->get_dict_with_prefix("lm_head."));
-    }
-
-    // verify
-    model_->verify_loaded_weights(prefix);
-    lm_head_->verify_loaded_weights("lm_head.");
-
-    model_->merge_loaded_weights();
-    lm_head_->merge_loaded_weights();
-  }
-
-  virtual void prepare_expert_weight(int32_t layer_id,
-                                     const std::vector<int32_t>& expert_ids) {
-    return;
-  }
-  virtual void update_expert_weight(int32_t layer_id) { return; }
-
-  layer::LmHead get_lm_head() { return lm_head_; }
-
-  void set_lm_head(layer::LmHead& head) { lm_head_ = head; }
-
-  layer::WordEmbedding get_word_embedding() {
-    return model_->get_word_embedding();
-  }
-
-  void set_word_embedding(layer::WordEmbedding& word_embedding) {
-    model_->set_word_embedding(word_embedding);
-  }
-
- private:
-  Qwen3MoeModel model_{nullptr};
-  layer::LmHead lm_head_{nullptr};
+  Qwen3MoeForCausalLMImpl(const ModelContext& context)
+      : LlmForCausalLMImplBase<Qwen3MoeModel>(context) {}
 };
 TORCH_MODULE(Qwen3MoeForCausalLM);
 

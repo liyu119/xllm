@@ -104,12 +104,12 @@ class ExpertBuffer {
   bool initialized_ = false;
 };
 
-class DeepseekV2DecoderLayerImpl : public BaseLayer {
+class NpuDeepseekV2DecoderLayerImpl : public BaseLayer {
  public:
-  explicit DeepseekV2DecoderLayerImpl(const ModelContext& context,
-                                      const int32_t layer_id);
+  explicit NpuDeepseekV2DecoderLayerImpl(const ModelContext& context,
+                                         const int32_t layer_id);
 
-  ~DeepseekV2DecoderLayerImpl() {};
+  ~NpuDeepseekV2DecoderLayerImpl() override = default;
 
   virtual void merge_loaded_weights() override;
 
@@ -147,7 +147,8 @@ class DeepseekV2DecoderLayerImpl : public BaseLayer {
   void param_from_args(atb_speed::deepseekV2::DecoderLayerParam& param,
                        const ModelArgs& args,
                        const ParallelArgs& parallel_args,
-                       bool is_prefill);
+                       bool is_prefill,
+                       bool is_prefixcache);
 
   void reserve_experts_weights(int num_of_device_experts);
 
@@ -157,7 +158,8 @@ class DeepseekV2DecoderLayerImpl : public BaseLayer {
       atb_speed::deepseekV2::DecoderLayerParam& param,
       const ModelArgs& args,
       const ParallelArgs& parallel_args,
-      bool is_prefill);
+      bool is_prefill,
+      bool is_prefixcache);
 
   void initialize_attention_parameters(
       atb_speed::deepseekV2::DecoderLayerParam& param,
@@ -236,10 +238,12 @@ class DeepseekV2DecoderLayerImpl : public BaseLayer {
   int32_t num_speculative_tokens_ = 0;
 
   atb_speed::deepseekV2::DecoderLayerParam prefill_param_;
+  atb_speed::deepseekV2::DecoderLayerParam prefill_param_prefixcache_;
   atb_speed::deepseekV2::DecoderLayerParam decode_param_;
   atb_speed::deepseekV2::DecoderLayerParam decode_mla_param_;
 
   atb_speed::Model::Node prefill_node_;
+  atb_speed::Model::Node prefill_node_prefixcache_;
   atb_speed::Model::Node decode_node_;
   atb_speed::Model::Node decode_mla_node_;
 
@@ -262,6 +266,7 @@ class DeepseekV2DecoderLayerImpl : public BaseLayer {
   torch::Tensor expert_routing_map_;
   torch::Tensor expert_routing_map_buffer_;
 };
+TORCH_MODULE(NpuDeepseekV2DecoderLayer);
 
 std::vector<torch::Tensor> get_dtp_inputs(torch::Tensor token_size_per_dp_group,
                                           int32_t dp_local_tp_size,

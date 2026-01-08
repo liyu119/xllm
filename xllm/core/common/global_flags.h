@@ -113,6 +113,8 @@ DECLARE_string(kv_cache_transfer_type);
 
 DECLARE_string(kv_cache_transfer_mode);
 
+DECLARE_int32(npu_phy_id);
+
 DECLARE_string(device_ip);
 
 DECLARE_int32(transfer_listen_port);
@@ -216,6 +218,8 @@ DECLARE_bool(enable_qwen3_reranker);
 DECLARE_string(reasoning_parser);
 
 DECLARE_bool(enable_shm);
+
+DECLARE_bool(use_contiguous_input_buffer);
 
 DECLARE_bool(enable_prefetch_weight);
 

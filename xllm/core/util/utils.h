@@ -47,7 +47,7 @@ void pad_2d_vector(std::vector<std::vector<T>>& vec, T pad_value) {
 }
 
 torch::ScalarType parse_dtype(const std::string& dtype_str,
-                              const torch::Device& device);
+                              const std::optional<torch::Device>& device);
 
 std::optional<std::vector<uint32_t>> parse_batch_sizes(
     const std::string& batch_sizes_str);
@@ -83,6 +83,10 @@ bool torch_to_proto(const torch::Tensor& torch_tensor,
                     proto::Tensor* proto_tensor);
 
 int32_t ceil_pow2(int32_t n);
+
+torch::ScalarType datatype_proto_to_torch(const std::string& proto_datatype);
+
+std::string torch_datatype_to_proto(torch::ScalarType torch_dtype);
 
 }  // namespace util
 }  // namespace xllm

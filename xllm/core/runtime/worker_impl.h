@@ -24,17 +24,14 @@ limitations under the License.
 #include "common/types.h"
 #include "executor.h"
 #include "forward_params.h"
-#include "framework/model_context.h"
-#if defined(USE_NPU)
-#include "framework/kv_cache/hccl_kv_cache_transfer.h"
-#include "framework/kv_cache/llm_data_dist_transfer.h"
-#endif
 #include "framework/eplb/eplb_executor.h"
 #include "framework/kv_cache/hierarchy_kv_cache_transfer.h"
 #include "framework/kv_cache/kv_cache_store.h"
+#include "framework/kv_cache/kv_cache_transfer.h"
 #include "framework/model/causal_lm.h"
 #include "framework/model/embedding_lm.h"
 #include "framework/model/model_input_params.h"
+#include "framework/model_context.h"
 #include "framework/parallel_state/parallel_args.h"
 #include "framework/parallel_state/parallel_state.h"
 #include "framework/sampling/beam_searcher.h"
@@ -182,8 +179,14 @@ class WorkerImpl {
 
  private:
   void update_last_step_output(const std::optional<ForwardOutput>& output);
+  // Only used for deepseek chunked prefill ops on npu device
+  void prepare_mla_prefixcache_inputs(ModelInputParams& input_params);
 
   void init_hierarchy_kv_cache_transfer();
+
+  // Get the effective number of layers based on whether this is a spec draft
+  // model
+  int64_t get_num_layers() const;
 
  protected:
   // runtime options
@@ -235,10 +238,7 @@ class WorkerImpl {
 
   InstanceRole instance_role_ = InstanceRole::DEFAULT;
 
-#if defined(USE_NPU)
   std::shared_ptr<KVCacheTransfer> kv_cache_transfer_;
-#endif
-
   std::unique_ptr<HierarchyKVCacheTransfer> hierarchy_kv_cache_transfer_;
 
   bool is_spec_draft_ = false;

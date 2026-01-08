@@ -20,13 +20,7 @@ limitations under the License.
 
 #include <memory>
 
-#if defined(USE_MLU)
-#include "../mlu/attention.h"
-#elif defined(USE_CUDA)
-#include "../cuda/attention.h"
-#elif defined(USE_ILU)
-#include "../ilu/attention.h"
-#endif
+#include "attention.h"
 #include "core/framework/model_context.h"
 #include "framework/model/model_args.h"
 #include "rotary_embedding_util.h"
@@ -77,7 +71,6 @@ class MRotaryEmbeddingImpl : public RotaryEmbeddingImpl {
                const AttentionMetadata& attn_metadata);
 
  private:
-  bool interleaved_;
   std::vector<int64_t> mrope_section_;
   torch::Tensor mrope_cu_seq_lens_;
 };

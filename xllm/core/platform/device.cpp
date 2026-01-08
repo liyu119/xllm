@@ -83,6 +83,17 @@ Device::Device(const torch::Device& device) : device_(device) {
 #endif
 }
 
+Device::Device(const int32_t device_index)
+    : device_(torch::Device(type_torch(), device_index)) {
+#if defined(USE_CUDA)
+  static bool enable_pdl = support_pdl(device_index);
+  enable_pdl_ = enable_pdl;
+
+  static bool is_sm90a_supported = support_sm90a(device_index);
+  support_sm90a_ = is_sm90a_supported;
+#endif
+}
+
 Device::operator torch::Device() const { return unwrap(); }
 
 void Device::set_device() const {
@@ -188,6 +199,17 @@ int Device::synchronize_default_stream() {
 
 std::unique_ptr<Stream> Device::get_stream_from_pool(const int32_t timeout) {
   return std::make_unique<Stream>(timeout);
+}
+
+std::unique_ptr<Stream> Device::current_stream() const {
+#if defined(USE_NPU)
+  auto current_s = c10_npu::getCurrentNPUStream(index());
+#elif defined(USE_MLU)
+  auto current_s = torch_mlu::getCurrentMLUStream(index());
+#elif defined(USE_CUDA) || defined(USE_ILU)
+  auto current_s = c10::cuda::getCurrentCUDAStream(index());
+#endif
+  return std::make_unique<Stream>(current_s);
 }
 
 }  // namespace xllm

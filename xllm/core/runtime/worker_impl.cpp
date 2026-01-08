@@ -36,6 +36,9 @@ limitations under the License.
 #include "common/device_monitor.h"
 #include "common/global_flags.h"
 #include "common/metrics.h"
+#if defined(USE_NPU)
+#include "platform/npu/device_capture_lock.h"
+#endif
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/model_input_params.h"
 #include "framework/model_loader.h"
@@ -56,6 +59,8 @@ constexpr uint64_t MBUF_SIZE = 128 * 1024 * 1024;
 constexpr uint32_t BATCH_COPY_MAX_SIZE = 4096;
 constexpr uint32_t TIMEOUT_S = 60;      // second
 constexpr uint32_t TIMEOUT_MS = 60000;  // millisecond
+constexpr int32_t FORMAT_ND = 2;
+constexpr int32_t FORMAT_NZ = 29;
 
 WorkerImpl::WorkerImpl(const ParallelArgs& parallel_args,
                        const torch::Device& device,
@@ -87,7 +92,7 @@ bool WorkerImpl::allocate_kv_cache(
   CHECK(kv_caches_.empty()) << "KV caches are already initialized.";
 
   // create a KVCache for each layer
-  const int64_t num_layers = context_.get_model_args().n_layers();
+  const int64_t num_layers = get_num_layers();
   const bool enable_lighting_indexer =
       context_.get_model_args().index_n_heads() > 0;
   const bool enable_linear_attention = context_.get_model_args().full_attention_interval() > 1;
@@ -95,16 +100,18 @@ bool WorkerImpl::allocate_kv_cache(
   for (int64_t i = 0; i < num_layers; ++i) {
     torch::Tensor key_cache, value_cache, index_cache, conv_cache, ssm_cache;
 #if defined(USE_NPU)
+    int32_t npu_format_type =
+        FLAGS_enable_mla && FLAGS_enable_prefix_cache ? FORMAT_NZ : FORMAT_ND;
     key_cache = at_npu::native::npu_format_cast(
         torch::empty(kv_cache_shape[0], torch::dtype(dtype_).device(device_)),
-        2);
+        npu_format_type);
     value_cache = at_npu::native::npu_format_cast(
         torch::empty(kv_cache_shape[1], torch::dtype(dtype_).device(device_)),
-        2);
+        npu_format_type);
     if (enable_lighting_indexer) {
       index_cache = at_npu::native::npu_format_cast(
           torch::empty(kv_cache_shape[2], torch::dtype(dtype_).device(device_)),
-          2);
+          npu_format_type);
     }
     if (enable_linear_attention) {
       conv_cache = at_npu::native::npu_format_cast(
@@ -169,33 +176,25 @@ bool WorkerImpl::allocate_continuous_kv_cache(
 bool WorkerImpl::allocate_kv_cache_with_transfer(
     uint64_t kv_cache_size,
     const std::vector<std::vector<int64_t>>& kv_cache_shape) {
-#if defined(USE_NPU)
   CHECK(model_ != nullptr) << "Model is not initialized.";
   CHECK(kv_caches_.empty()) << "KV caches are already initialized.";
 
   int32_t device_id = device_.index();
-  if (FLAGS_kv_cache_transfer_type == "LlmDataDist") {
-    kv_cache_transfer_ =
-        std::make_shared<LlmDataDistTransfer>(options_.device_ip().value(),
-                                              options_.transfer_listen_port(),
-                                              options_.instance_role());
-
-    // create a KVCache for each layer
-    const int64_t num_layers = context_.get_model_args().n_layers();
-    kv_caches_.reserve(num_layers);
-
-    int32_t device_id = device_.index();
-    kv_cache_transfer_->initialize(device_id);
-    kv_cache_transfer_->allocate_kv_cache(
-        kv_caches_, num_layers, kv_cache_shape, dtype_);
-  } else {
-    kv_cache_transfer_ = std::make_unique<HcclKVCacheTransfer>(
-        device_id, options_.transfer_listen_port());
-
-    allocate_kv_cache(kv_cache_shape);
-    kv_cache_transfer_->register_kv_cache(kv_caches_, kv_cache_shape, dtype_);
-  }
-#endif
+  // create a KVCache for each layer
+  const int64_t num_layers = context_.get_model_args().n_layers();
+  kv_cache_transfer_ = KVCacheTransferFactory::create(
+      FLAGS_kv_cache_transfer_type,
+      options_.device_ip().value(),
+      options_.transfer_listen_port(),
+      options_.instance_role(),
+      device_,
+      kv_cache_shape,
+      dtype_,
+      kv_caches_,
+      num_layers,
+      [this](const std::vector<std::vector<int64_t>>& shape) {
+        this->allocate_kv_cache(shape);
+      });
 
   init_hierarchy_kv_cache_transfer();
 
@@ -357,6 +356,24 @@ ForwardInput WorkerImpl::update_input_by_last_step_output(
 
 void WorkerImpl::prepare_work_before_execute(const ForwardInput& input,
                                              ForwardInput& processed_input) {
+#if defined(USE_NPU)
+  // Without device_capture_lock, ACL graph capture will be interrupted by the
+  // synchronization H2D of data update streams asynchronously scheduled by
+  // other threads, even if the capture and synchronization streams are not the
+  // same, and even if capture_mode is set to
+  // ACL_MODEL_RI_CAPTURE_MODE_THREAD_LOCAL.
+  // The possible reason is that ACL graph capture may use additional auxiliary
+  // streams, and these auxiliary streams might be the same as the
+  // asynchronously scheduled data update streams.
+
+  std::optional<std::unique_lock<std::mutex>> lock_guard;
+  if (FLAGS_enable_graph) {
+    auto& capture_lock =
+        ::xllm::npu::DeviceCaptureLock::get_instance().get_lock(
+            device_.index());
+    lock_guard.emplace(capture_lock);
+  }
+#endif
   c10::StreamGuard streamGuard = prepare_stream_->set_stream_guard();
 
   processed_input = input.to(device_, dtype_);
@@ -385,8 +402,14 @@ void WorkerImpl::prepare_work_before_execute(const ForwardInput& input,
       kv_caches_[layer_id].swap_blocks(src_tensor, dst_tensor);
     }
   }
+  if (FLAGS_enable_mla &&
+      input_params.batch_forward_type.is_chunked_prefill()) {
+    prepare_mla_prefixcache_inputs(input_params);
+  }
 
-  if (!context_.get_parallel_args().mapping_data().empty()) {
+  if (!context_.get_parallel_args().mapping_data().empty() &&
+      (context_.get_parallel_args().dp_size() > 1 ||
+       context_.get_parallel_args().ep_size() > 1)) {
     torch::Tensor token_size_per_dp_group =
         torch::tensor(processed_input.input_params.dp_global_token_nums,
                       torch::TensorOptions()
@@ -409,11 +432,6 @@ void WorkerImpl::prepare_work_before_execute(const ForwardInput& input,
   }
 #endif
 
-  processed_input.sampling_params = input.sampling_params.to(device_, dtype_);
-  if (input.acc_logprob.defined()) {
-    processed_input.acc_logprob =
-        input.acc_logprob.to(torch::kFloat32).to(device_);
-  }
   auto ret = prepare_stream_->synchronize();
 }
 
@@ -684,6 +702,55 @@ void WorkerImpl::init_hierarchy_kv_cache_transfer() {
     hierarchy_kv_cache_transfer_ = std::make_unique<HierarchyKVCacheTransfer>(
         transfer_options, device_, &kv_caches_);
   }
+}
+void WorkerImpl::prepare_mla_prefixcache_inputs(
+    ModelInputParams& input_params) {
+  int32_t sum_prefix = input_params.kv_cache_tokens_nums.sum().item<int>();
+  input_params.history_compressed_kv =
+      torch::empty({sum_prefix, context_.get_model_args().kv_lora_rank()},
+                   torch::TensorOptions().dtype(dtype_).pinned_memory(true))
+          .to(device_);
+
+  input_params.history_k_rope =
+      torch::empty({sum_prefix, context_.get_model_args().qk_rope_head_dim()},
+                   torch::TensorOptions().dtype(dtype_).pinned_memory(true))
+          .to(device_);
+  ;
+
+  input_params.ring_cur_seqlen =
+      torch::stack({input_params.q_seq_lens, input_params.q_seq_lens})
+          .to(device_);
+
+  input_params.ring_cache_seqlen =
+      torch::stack({input_params.q_seq_lens,
+                    input_params.kv_cache_tokens_nums.to(device_)})
+          .to(device_);
+
+  torch::Tensor ring_cur_seqlen_host =
+      input_params.ring_cur_seqlen.cpu().contiguous();
+  torch::Tensor ring_cache_seqlen_host =
+      input_params.ring_cache_seqlen.cpu().contiguous();
+  input_params.ring_cur_seqlen_host = std::vector<int>(
+      ring_cur_seqlen_host.data_ptr<int>(),
+      ring_cur_seqlen_host.data_ptr<int>() + ring_cur_seqlen_host.numel());
+  input_params.ring_cache_seqlen_host = std::vector<int>(
+      ring_cache_seqlen_host.data_ptr<int>(),
+      ring_cache_seqlen_host.data_ptr<int>() + ring_cache_seqlen_host.numel());
+}
+
+int64_t WorkerImpl::get_num_layers() const {
+  int64_t num_layers = context_.get_model_args().n_layers();
+#if !defined(USE_NPU)
+  if (is_spec_draft_) {
+    // for MTP draft models, the number of layers is the number of nextn predict
+    // layers
+    std::string model_type = context_.get_model_args().model_type();
+    if (model_type == "deepseek_mtp") {
+      num_layers = context_.get_model_args().num_nextn_predict_layers();
+    }
+  }
+#endif
+  return num_layers;
 }
 
 }  // namespace xllm

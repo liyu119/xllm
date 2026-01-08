@@ -28,6 +28,7 @@ namespace xllm {
 class Device {
  public:
   explicit Device(const torch::Device& device);
+  explicit Device(const int32_t device_index);
   ~Device() = default;
   operator torch::Device() const;
 
@@ -51,6 +52,9 @@ class Device {
 
   int synchronize_default_stream();
   std::unique_ptr<Stream> get_stream_from_pool(const int32_t timeout = -1);
+
+  // get the current stream
+  std::unique_ptr<Stream> current_stream() const;
 
  private:
   struct DeviceMem {

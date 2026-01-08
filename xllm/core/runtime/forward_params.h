@@ -24,6 +24,7 @@ limitations under the License.
 #include "common/types.h"
 #include "framework/model/model_input_params.h"
 #include "framework/request/mm_batch_data.h"
+#include "framework/request/mm_data.h"
 #include "framework/sampling/beam_searcher.h"
 #include "framework/sampling/sampling_params.h"
 
@@ -33,12 +34,13 @@ class WorkerType {
  public:
   enum Value : int8_t {
     INVALID = 0,
-    LLM,   // LLM
-    VLM,   // VLM
-    DIT,   // DIT
-    ELM,   // Embedding LM
-    EVLM,  // Embedding VLM
-    REC,   // Rec
+    LLM,     // LLM
+    VLM,     // VLM
+    DIT,     // DIT
+    ELM,     // Embedding LM
+    EVLM,    // Embedding VLM
+    REC,     // Rec
+    MMEVLM,  // Encoder Embedding VLM
   };
 
   constexpr WorkerType(Value v) : value_(v) {}
@@ -55,6 +57,8 @@ class WorkerType {
       value_ = EVLM;
     } else if (str == "REC") {
       value_ = REC;
+    } else if (str == "MMEVLM") {
+      value_ = MMEVLM;
     } else {
       value_ = INVALID;
     }
@@ -83,6 +87,8 @@ class WorkerType {
       return "EVLM";
     } else if (this->value_ == REC) {
       return "REC";
+    } else if (this->value_ == MMEVLM) {
+      return "MMEVLM";
     } else {
       return "INVALID";
     }
@@ -103,6 +109,7 @@ struct ForwardInput {
     inputs.transfer_kv_infos = transfer_kv_infos;
     inputs.eplb_info = eplb_info;
     inputs.acc_logprob = safe_to(acc_logprob, device, true);
+    inputs.device_input_buffer = device_input_buffer;
     return inputs;
   }
 
@@ -122,11 +129,15 @@ struct ForwardInput {
   torch::Tensor positions;
   ModelInputParams input_params;
   SamplingParameters sampling_params;
+  // beam search kernel input
+  torch::Tensor acc_logprob;
   // kv info for disaggregated prefill/decode
   std::vector<TransferKVInfo> transfer_kv_infos;
   EplbInfo eplb_info;
-  // beam search kernel input
-  torch::Tensor acc_logprob;
+
+  // A tensor used to store all device-side input data, with other input tensors
+  // constructed based on the address and offset of this tensor.
+  torch::Tensor device_input_buffer;
 };
 
 // output after forward execution
@@ -170,6 +181,7 @@ struct RawForwardInput {
   std::vector<int32_t> seq_lens;
   std::vector<int32_t> q_seq_lens;
   std::vector<int32_t> q_cu_seq_lens;
+  std::vector<int32_t> kv_cache_tokens_nums;
   std::vector<int32_t> new_token_slot_ids;
   std::vector<std::vector<int32_t>> block_tables_vec;
   int32_t num_sequences;
@@ -217,6 +229,8 @@ struct RawForwardOutput {
   std::vector<int32_t> src_seq_idxes;
   std::vector<int32_t> out_tokens;
   std::vector<float> out_logprobs;
+  // multimodal embedding output
+  std::vector<torch::Tensor> mm_embeddings;
 };
 
 struct BatchedForwardInputs {

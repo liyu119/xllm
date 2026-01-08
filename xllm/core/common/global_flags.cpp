@@ -19,7 +19,10 @@ limitations under the License.
 
 #include "brpc/reloadable_flags.h"
 
-// NOTE: related flags should be placed together.
+// NOTE:
+// 1. related flags should be placed together.
+// 2. when adding new flags, plz add the flag name to the appropriate
+//    category in help_formatter.h so it appears in the help output.
 
 // --- xllm service config ---
 
@@ -43,10 +46,10 @@ DEFINE_int32(max_reconnect_count,
 
 DEFINE_int32(num_threads, 8, "Number of threads to process requests.");
 
-DEFINE_int32(
-    max_concurrent_requests,
-    0,
-    "Maximum number of concurrent requests the xllm service can handle.");
+DEFINE_int32(max_concurrent_requests,
+             200,
+             "Maximum number of concurrent requests the xllm service can "
+             "handle. If set to 0, there is no limit.");
 
 BRPC_VALIDATE_GFLAG(max_concurrent_requests, brpc::NonNegativeInteger);
 
@@ -64,7 +67,7 @@ DEFINE_string(
 
 DEFINE_string(task,
               "generate",
-              "The task to use the model for(e.g. generate, embed).");
+              "The task to use the model for(e.g. generate, embed, mm_embed).");
 
 DEFINE_string(devices,
               "npu:0",
@@ -127,18 +130,18 @@ DEFINE_int64(max_cache_size,
              "cache size is caculated by available memory.");
 
 DEFINE_double(max_memory_utilization,
-              0.9,
+              0.8,
               "The fraction of GPU memory to be used for model inference, "
               "including model weights and kv cache.");
 
 // --- scheduler config ---
 
-DEFINE_int32(max_tokens_per_batch, 20480, "Max number of tokens per batch.");
+DEFINE_int32(max_tokens_per_batch, 10240, "Max number of tokens per batch.");
 
 DEFINE_int32(max_seqs_per_batch, 1024, "Max number of sequences per batch.");
 
 DEFINE_bool(enable_schedule_overlap,
-            true,
+            false,
             "Whether to enable schedule overlap.");
 
 DEFINE_double(prefill_scheduling_memory_usage_threshold,
@@ -258,6 +261,15 @@ DEFINE_int32(nnodes, 1, "The number of multi-nodes.");
 
 DEFINE_int32(node_rank, 0, "The node rank.");
 
+DEFINE_bool(enable_shm,
+            false,
+            "Whether to enable shared memory for executing model.");
+
+DEFINE_bool(use_contiguous_input_buffer,
+            true,
+            "Whether to use contiguous device input buffer for executing "
+            "model. Currently only effective when enable_shm is true.");
+
 // --- disaggregated prefill and decode config ---
 
 DEFINE_string(xservice_addr, "", "XService server address.");
@@ -277,19 +289,18 @@ DEFINE_string(instance_role,
               "DEFAULT",
               "The role of instance(e.g. DEFAULT, PREFILL, DECODE, MIX).");
 
-DEFINE_string(kv_cache_transfer_type,
-              "LlmDataDist",
-              "The type of kv cache transfer(e.g. LlmDataDist, HCCL).");
+DEFINE_string(
+    kv_cache_transfer_type,
+    "LlmDataDist",
+    "The type of kv cache transfer(e.g. LlmDataDist, Mooncake, HCCL).");
 
 DEFINE_string(kv_cache_transfer_mode,
               "PUSH",
               "The mode of kv cache transfer(e.g. PUSH, PULL).");
 
-DEFINE_int32(transfer_listen_port, 26000, "The KVCacheTranfer listen port.");
+DEFINE_int32(npu_phy_id, -1, "npu phy id");
 
-DEFINE_bool(enable_shm,
-            false,
-            "Whether to enable shared memory for executing model.");
+DEFINE_int32(transfer_listen_port, 26000, "The KVCacheTranfer listen port.");
 
 // --- function call config ---
 
@@ -417,7 +428,7 @@ DEFINE_bool(enable_beam_search_kernel,
 DEFINE_string(reasoning_parser,
               "",
               "Specify the reasoning parser for handling reasoning "
-              "interactions(e.g. glm45, qwen3, deepseek-r1).");
+              "interactions(e.g. glm45, glm47, qwen3, deepseek-r1).");
 
 // --- qwen3 reranker config ---
 

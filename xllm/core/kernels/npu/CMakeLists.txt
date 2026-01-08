@@ -1,18 +1,18 @@
 include(cc_library)
 
-add_subdirectory(impl)
 add_subdirectory(xllm_ops)
-add_subdirectory(triton)
+
 cc_library(
   NAME
     npu_kernels
   HDRS
-    linear.h
-    split.h
-    rms_norm.h
-    rope.h
+    npu_ops_api.h
+  SRCS
+    active.cpp
+    attention.cpp
+    fused_layernorm.cpp
+    matmul.cpp
+    rope.cpp
   DEPS
-    :npu_kernels_impl
-    triton_adapter
-    # spdlog::spdlog
+    :torch_npu_kernels
 )

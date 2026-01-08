@@ -43,6 +43,9 @@ limitations under the License.
 
 namespace xllm {
 
+// Defines a npu memory alignment constant with 16-byte alignment
+constexpr int32_t NZ_ALIGNMENT = 16;
+
 LLMEngine::LLMEngine(const runtime::Options& options,
                      std::shared_ptr<DistManager> dist_manager)
     : options_(options), dist_manager_(dist_manager) {
@@ -262,7 +265,21 @@ Engine::KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
   int64_t index_slot_size = 0;
   int64_t linear_slot_size = 0;
   if (FLAGS_enable_mla) {
+#if defined(USE_NPU)
+    if (FLAGS_enable_prefix_cache) {
+      slot_size =
+          dtype_size *
+          ((args_.kv_lora_rank() + NZ_ALIGNMENT - 1) / NZ_ALIGNMENT +
+           (args_.qk_rope_head_dim() + NZ_ALIGNMENT - 1) / NZ_ALIGNMENT) *
+          NZ_ALIGNMENT;
+    } else {
+      slot_size =
+          dtype_size * (args_.kv_lora_rank() + args_.qk_rope_head_dim());
+    }
+#else
     slot_size = dtype_size * (args_.kv_lora_rank() + args_.qk_rope_head_dim());
+#endif
+
   } else {
     slot_size = 2 * dtype_size * head_dim_ * n_local_kv_heads_;
   }
@@ -281,6 +298,18 @@ Engine::KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
   kv_cache_cap.index_slot_size = index_slot_size;
   kv_cache_cap.linear_slot_size = linear_slot_size;
   kv_cache_cap.n_layers = args_.n_layers();
+#if !defined(USE_NPU)
+  // this adoption is because the allocation of kv cache is based on
+  //  the number of layers, and the draft engine is using the same model as the
+  //  target engine.
+  // so we need to override the number of layers for the draft engine.
+  if (options_.is_draft_engine()) {
+    if ((args_.model_type() == "deepseek_v3" ||
+         args_.model_type() == "deepseek_v32")) {
+      kv_cache_cap.n_layers = args_.num_nextn_predict_layers();
+    }
+  }
+#endif
 
   if (!FLAGS_enable_continuous_kvcache) {
     // compute kv cache n_blocks
@@ -288,15 +317,15 @@ Engine::KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
     const int64_t block_size_in_bytes =
         block_size * (slot_size + index_slot_size + linear_slot_size);
     kv_cache_cap.n_blocks = kv_cache_cap.cache_size_in_bytes /
-                            (args_.n_layers() * block_size_in_bytes);
+                            (kv_cache_cap.n_layers * block_size_in_bytes);
     CHECK_GT(kv_cache_cap.n_blocks, 0) << "no n_blocks for kv cache";
   } else {
     int32_t n_pages =
         kv_cache_cap.cache_size_in_bytes / FLAGS_phy_page_granularity_size;
     if (FLAGS_enable_mla) {
-      n_pages -= n_pages % (args_.n_layers());
+      n_pages -= n_pages % (kv_cache_cap.n_layers);
     } else {
-      n_pages -= n_pages % (2 * args_.n_layers());
+      n_pages -= n_pages % (2 * kv_cache_cap.n_layers);
     }
     kv_cache_cap.n_pages = n_pages;
     CHECK_GT(kv_cache_cap.n_pages, 0) << "no n_pages for kv cache";
@@ -320,10 +349,30 @@ bool LLMEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
   std::vector<std::vector<int64_t>> kv_cache_shape;
   kv_cache_shape.reserve(2);
   if (FLAGS_enable_mla) {
+#if defined(USE_NPU)
+    if (FLAGS_enable_prefix_cache) {
+      kv_cache_shape.emplace_back(
+          std::vector<int64_t>{kv_cache_cap.n_blocks,
+                               (args_.kv_lora_rank() + 15) / 16,
+                               block_size,
+                               16});
+      kv_cache_shape.emplace_back(
+          std::vector<int64_t>{kv_cache_cap.n_blocks,
+                               (args_.qk_rope_head_dim() + 15) / 16,
+                               block_size,
+                               16});
+    } else {
+      kv_cache_shape.emplace_back(std::vector<int64_t>{
+          kv_cache_cap.n_blocks, block_size, 1, args_.kv_lora_rank()});
+      kv_cache_shape.emplace_back(std::vector<int64_t>{
+          kv_cache_cap.n_blocks, block_size, 1, args_.qk_rope_head_dim()});
+    }
+#else
     kv_cache_shape.emplace_back(std::vector<int64_t>{
         kv_cache_cap.n_blocks, block_size, 1, args_.kv_lora_rank()});
     kv_cache_shape.emplace_back(std::vector<int64_t>{
         kv_cache_cap.n_blocks, block_size, 1, args_.qk_rope_head_dim()});
+#endif
   } else {
     kv_cache_shape.emplace_back(std::vector<int64_t>{
         kv_cache_cap.n_blocks, block_size, n_local_kv_heads_, head_dim_});

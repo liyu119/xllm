@@ -817,7 +817,7 @@ std::vector<Batch> ContinuousScheduler::prepare_batch() {
     COUNTER_ADD(scheduling_latency_seconds, timer.elapsed_seconds());
     kv_cache_manager_->transfer_blocks(batches);
   } else {
-    kv_cache_manager_->transfer_blocks(std::nullopt);
+    kv_cache_manager_->transfer_blocks();
   }
 
   GAUGE_SET(num_pending_requests,
@@ -975,7 +975,8 @@ void ContinuousScheduler::update_token_latency_metrics(
     std::vector<Sequence*>& sequences) {
   const auto now = absl::Now();
   for (Sequence* sequence : sequences) {
-    if (sequence->is_chunked_prefill_stage()) {
+    if (sequence->is_chunked_prefill_stage() ||
+        sequence->last_token_handled()) {
       // skip chunked prefill stage
       continue;
     }
@@ -1008,19 +1009,22 @@ void ContinuousScheduler::process_batch_output(bool enable_schedule_overlap) {
   // process request output in batch
   for (auto request : to_be_processed_requests) {
     // ignore cancelled/finished requests when enable_schedule_overlap.
-    if (options_.enable_schedule_overlap() && request->state().stream) {
-      // skip cancelled request
-      if (request->cancelled()) {
-        continue;
-      }
-      if (!request->finished()) {
-        stream_requests.emplace_back(request);
-        continue;
-      }
-      // handle token when last token not be handled.
-      if (request->finished() && !request->last_token_handled()) {
+    if (options_.enable_schedule_overlap()) {
+      if (request->state().stream) {
+        if (request->cancelled()) {
+          continue;
+        }
+        if (!request->finished()) {
+          stream_requests.emplace_back(request);
+          continue;
+        }
+        // handle token when last token not be handled.
+        if (request->finished() && !request->last_token_handled()) {
+          request->handle_last_token();
+          stream_requests.emplace_back(request);
+        }
+      } else if (request->finished() && !request->last_token_handled()) {
         request->handle_last_token();
-        stream_requests.emplace_back(request);
       }
     } else if (request->state().stream) {
       stream_requests.emplace_back(request);
@@ -1030,11 +1034,6 @@ void ContinuousScheduler::process_batch_output(bool enable_schedule_overlap) {
     response_processor_->process_stream_requests(stream_requests,
                                                  last_step_prefill_);
   }
-}
-
-std::vector<Block> ContinuousScheduler::allocate_blocks_for(size_t token_num,
-                                                            int32_t& dp_rank) {
-  return kv_cache_manager_->allocate(token_num, dp_rank);
 }
 
 std::vector<int64_t> ContinuousScheduler::get_num_occupied_slots(
@@ -1047,7 +1046,8 @@ std::vector<int64_t> ContinuousScheduler::get_num_occupied_slots(
 
   for (auto& sequence : sequences) {
     const int32_t dp_rank = sequence->dp_rank();
-    // last_block_len is the length of the last unfilled block of each sequence.
+    // last_block_len is the length of the last unfilled block of each
+    // sequence.
     int32_t last_block_len =
         sequence->kv_state().kv_cache_tokens_num() % block_size;
     num_occupied_slots[dp_rank] += last_block_len;

@@ -70,11 +70,6 @@ class LlmDataDistTransfer : public KVCacheTransfer {
       std::shared_ptr<NPULayerSynchronizerImpl>& layer_synchronizer,
       bool is_spec_draft) override;
 
-  std::vector<torch::Tensor> convert_to_torch_tensor(
-      const std::vector<int64_t>& dims,
-      const torch::ScalarType dtype,
-      const std::vector<uintptr_t>& addresses);
-
   ClusterInfo create_cluster_info(const uint64_t& cluster_id,
                                   const std::string& remote_ip,
                                   const uint16_t& remote_port);

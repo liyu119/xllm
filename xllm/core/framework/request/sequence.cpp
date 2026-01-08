@@ -28,15 +28,17 @@ limitations under the License.
 #include <vector>
 
 #include "core/common/metrics.h"
+#include "core/framework/request/mm_data_visitor.h"
 #include "core/framework/tokenizer/tokenizer.h"
 #include "core/util/slice.h"
 #include "core/util/tensor_helper.h"
+#include "rec_type.h"
 
 namespace xllm {
 
 namespace {
 constexpr size_t kDecoderBosTokenCount = 1;
-constexpr size_t kDecoderMaxTokenCount = 4;
+constexpr size_t kDecoderMaxTokenCount = kRecTotalSteps + kDecoderBosTokenCount;
 }  // namespace
 
 const std::string Sequence::ENCODER_SPARSE_EMBEDDING_NAME = "sparse_embedding";
@@ -142,11 +144,21 @@ Sequence::Sequence(size_t index,
   // init logprob state
   logprob_state_ = std::make_unique<LogprobState>(num_prompt_tokens_, capacity);
 
+  if (sequence_params_.sampling_param->frequency_penalty != 0 ||
+      sequence_params_.sampling_param->presence_penalty != 0 ||
+      sequence_params_.sampling_param->repetition_penalty != 1) {
+    need_unique_tokens_ = true;
+  }
+
   // add the prompt tokens
   for (const auto token_id : prompt_token_ids) {
     tokens_[num_tokens_++] = token_id;
-    token_to_count_map_[token_id]++;
+    if (need_unique_tokens_) {
+      token_to_count_map_[token_id] = 0;
+    }
   }
+  // need one token to padding even dont need token count
+  token_to_count_map_[prompt_token_ids.back()] = 0;
   input_embedding_ = input_embedding;
   cur_generated_token_idx_ = num_prompt_tokens_;
 }
@@ -224,7 +236,9 @@ void Sequence::append_token(const Token& token) {
     return;
   }
 
-  token_to_count_map_[token_id]++;
+  if (need_unique_tokens_) {
+    token_to_count_map_[token_id]++;
+  }
   // update logprobs if needed
   if (sequence_params_.sampling_param->logprobs) {
     logprob_state_->update_logprob(
@@ -265,7 +279,9 @@ void Sequence::update_last_step_token(const Token& token, size_t token_offset) {
 
   const int32_t token_id = static_cast<int32_t>(token.id);
   tokens_[cur_generated_token_idx_] = token_id;
-  token_to_count_map_[token_id]++;
+  if (need_unique_tokens_) {
+    token_to_count_map_[token_id]++;
+  }
   // update logprobs if needed
   if (sequence_params_.sampling_param->logprobs) {
     logprob_state_->update_logprob(
@@ -293,8 +309,10 @@ void Sequence::update_token(size_t index, const Token& token) {
   const int32_t origin_token_id = tokens_[index];
   const int32_t token_id = static_cast<int32_t>(token.id);
   tokens_[index] = token_id;
-  --token_to_count_map_[origin_token_id];
-  ++token_to_count_map_[token_id];
+  if (need_unique_tokens_) {
+    --token_to_count_map_[origin_token_id];
+    ++token_to_count_map_[token_id];
+  }
   // update logprobs if needed
   if (sequence_params_.sampling_param->logprobs) {
     logprob_state_->update_logprob(
@@ -302,6 +320,20 @@ void Sequence::update_token(size_t index, const Token& token) {
   }
   // logprobs_[index] = token.logprob;
   finish_status_invalidated_ = true;
+}
+
+void Sequence::update_mm_embeddings(
+    const std::vector<torch::Tensor>& mm_embeddings) {
+  // cannot update embeddings to a finished sequence
+  if (finished_) {
+    return;
+  }
+  output_mm_embeddings_ = mm_embeddings;
+  CHECK(sequence_params_.sampling_param->is_embeddings);
+  // invalidate the finish status once a new token is appended
+  finish_status_invalidated_ = false;
+  finished_ = true;
+  finish_reason_ = FinishReason::STOP;
 }
 
 void Sequence::update_embeddings(const torch::Tensor& embeddings) {
@@ -406,11 +438,34 @@ SequenceOutput Sequence::generate_output(const Tokenizer& tokenizer) {
   AUTO_COUNTER(detokenization_latency_seconds_non_stream);
 
   // build embeddings for output
+  if (sequence_params_.sampling_param->is_embeddings &&
+      output_mm_embeddings_.size() > 0) {
+    SequenceOutput output;
+    output.index = index_;
+    std::vector<EmbeddingOutput> embedding_outputs;
+    embedding_outputs.reserve(output_mm_embeddings_.size());
+    std::unordered_map<MMKey, std::vector<torch::Tensor>> metadata;
+    CollectItemTensorVisitor visitor(metadata, {"pixel_values"});
+    mm_data_.foreach (visitor);
+    for (int i = 0; i < output_mm_embeddings_.size(); i++) {
+      const auto& output_mm_embedding = output_mm_embeddings_[i];
+      EmbeddingOutput embedding_output;
+      embedding_output.embedding = output_mm_embedding;
+      for (const auto& [key, value] : metadata) {
+        embedding_output.metadata[key] = value[i];
+      }
+      embedding_outputs.push_back(embedding_output);
+    };
+    output.mm_embeddings = embedding_outputs;
+    return output;
+  }
+
   if (sequence_params_.sampling_param->is_embeddings) {
     SequenceOutput output;
     output.index = index_;
-    Slice<float> embedding_slice = {output_embedding_.data_ptr<float>(),
-                                    output_embedding_.size(0)};
+    Slice<float> embedding_slice = {
+        output_embedding_.data_ptr<float>(),
+        static_cast<size_t>(output_embedding_.size(0))};
     output.embeddings = embedding_slice;
     return output;
   }

@@ -166,6 +166,8 @@ class Sequence final {
     return num_tokens_ > decoder_.output_offset();
   }
 
+  // update mm embeddings to the sequence
+  void update_mm_embeddings(const std::vector<torch::Tensor>& mm_embeddings);
   // update embeddings to the sequence
   void update_embeddings(const torch::Tensor& embedding);
   int32_t get_embedding_id() const { return embedding_id_; }
@@ -267,6 +269,8 @@ class Sequence final {
     return sequence_params_.sampling_param->beam_width > 1;
   }
 
+  bool check_need_unique_tokens() { return need_unique_tokens_; }
+
   LogprobState* logprob_state() { return logprob_state_.get(); }
 
   // set sequence id
@@ -304,6 +308,14 @@ class Sequence final {
   void set_cancel() { cancelled_.store(true, std::memory_order_relaxed); }
 
   bool cancelled() const { return cancelled_.load(std::memory_order_relaxed); }
+
+  void handle_last_token() {
+    last_token_handled_.store(true, std::memory_order_relaxed);
+  }
+
+  bool last_token_handled() const {
+    return last_token_handled_.load(std::memory_order_relaxed);
+  }
 
  private:
   void init_onerec_sequence(const std::vector<int32_t>& prompt_token_ids,
@@ -359,6 +371,9 @@ class Sequence final {
   MMData mm_data_;
   int mrope_position_delta_ = 0;
 
+  // mm embedding of the sequence
+  std::vector<torch::Tensor> output_mm_embeddings_;
+
   // embeddings of the sequence
   torch::Tensor output_embedding_;
 
@@ -367,6 +382,7 @@ class Sequence final {
 
   // the count of each token id
   std::unordered_map<int32_t, int32_t> token_to_count_map_;
+  bool need_unique_tokens_ = false;
 
   // the length of the prompt tokens
   size_t num_prompt_tokens_ = 0;
@@ -425,6 +441,9 @@ class Sequence final {
 
   Timer timer_;
   bool is_timeout_set_ = false;
+
+  // whether the last token is handled
+  std::atomic<bool> last_token_handled_{false};
 };
 
 }  // namespace xllm

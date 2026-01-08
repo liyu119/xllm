@@ -188,4 +188,136 @@ inline void save_tensor_as_pickle(const torch::Tensor& tensor,
   CHECK(ofs.good()) << "Write failed to: " << file_path;
 }
 
+// Computes the new shape for tensor view casting between dtypes by bytes, for
+// use with from_blob.
+inline std::vector<int64_t> compute_view_shape(const torch::Tensor& src,
+                                               int64_t src_size,
+                                               int64_t target_size) {
+  std::vector<int64_t> new_sizes = src.sizes().vec();
+
+  if (src_size == target_size) {
+    // No size change, just return original shape
+    return new_sizes;
+  } else if (src_size > target_size) {
+    // Splitting: each element will be split into more elements of smaller dtype
+    // (e.g., BFloat16 -> char)
+    int64_t ratio = src_size / target_size;
+    if (new_sizes.empty()) {
+      // Scalar tensor: introduce new dimension of length ratio
+      new_sizes.push_back(ratio);
+    } else {
+      // For normal tensors: expand the last dimension accordingly
+      // e.g. [8, 2048] -> [8, 4096]
+      new_sizes.back() *= ratio;
+    }
+  } else {
+    // Merging: multiple small dtype elements become one larger dtype element
+    // (e.g., char -> BFloat16)
+    int64_t ratio = target_size / src_size;
+
+    // Ensure tensor is not scalar
+    CHECK(!new_sizes.empty()) << "Cannot merge views for a scalar tensor.";
+
+    int64_t last_dim = new_sizes.back();
+    // Last dim size must be divisible by merge ratio
+    CHECK(last_dim % ratio == 0)
+        << "Last dimension size (" << last_dim
+        << ") must be divisible by type ratio (" << ratio
+        << ") when viewing as a larger dtype.";
+    new_sizes.back() = last_dim / ratio;
+  }
+  return new_sizes;
+}
+
+// Simulates the Python tensor.view(dtype) functionality.
+// Reinterprets a raw byte tensor (usually uint8) as a tensor of the target data
+// type. Note: The input tensor must be contiguous in memory.
+inline torch::Tensor view_as_dtype(const torch::Tensor& src,
+                                   torch::ScalarType target_dtype) {
+  // If the source type already matches the target type, just return as is.
+  if (src.scalar_type() == target_dtype) {
+    return src;
+  }
+
+  // core constraint: require the input tensor to be contiguous for raw memory
+  // reinterpretation. use CHECK to enforce contiguity; if failed, the caller
+  // must ensure .contiguous() is called beforehand.
+  CHECK(src.is_contiguous())
+      << "view_as_dtype expects a contiguous tensor. Please call .contiguous() "
+         "before passing it in.";
+
+  // calculate the source and target element sizes in bytes.
+  int64_t src_element_size = src.element_size();
+  int64_t target_element_size = torch::elementSize(target_dtype);
+  std::vector<int64_t> new_shape =
+      compute_view_shape(src, src_element_size, target_element_size);
+
+  // we pass in a lambda, capture 'src' (by value, increase reference count)
+  // when the returned tensor is destroyed, this lambda will be called, thus
+  // releasing the reference to src. this makes the new tensor truly own the
+  // "share" of the underlying storage, like python's view is safe.
+  auto deleter = [src](void*) {
+    // this empty lambda just captures src, can keep the memory alive.
+    // src will automatically reduce reference count when the lambda is
+    // destroyed
+  };
+
+  // Create a zero-copy view on the same memory.
+  //    Notes:
+  //    - data_ptr() directly points to the src tensor's memory.
+  //    - The returned tensor does NOT own the memory.
+  //    - The src tensor's lifetime MUST cover the returned tensor.
+  return torch::from_blob(
+      src.data_ptr(), new_shape, deleter, src.options().dtype(target_dtype));
+}
+
+template <typename T>
+constexpr torch::ScalarType get_scalar_type() {
+  if constexpr (std::is_same_v<T, float>) {
+    return torch::kFloat32;
+  } else if constexpr (std::is_same_v<T, double>) {
+    return torch::kFloat64;
+  } else if constexpr (std::is_same_v<T, int32_t>) {
+    return torch::kInt32;
+  } else if constexpr (std::is_same_v<T, int64_t>) {
+    return torch::kInt64;
+  } else if constexpr (std::is_same_v<T, uint8_t>) {
+    return torch::kUInt8;
+  } else if constexpr (std::is_same_v<T, int8_t>) {
+    return torch::kInt8;
+  } else if constexpr (std::is_same_v<T, bool>) {
+    return torch::kBool;
+  } else {
+    LOG(FATAL) << "Unsupported type for torch::ScalarType.";
+    return torch::kFloat32;
+  }
+}
+
+inline torch::Tensor get_tensor_from_blob(const std::vector<int64_t>& dims,
+                                          const torch::ScalarType dtype,
+                                          const void* dev_addr) {
+  c10::DeviceType device_type = c10::DeviceType::PrivateUse1;
+  torch::TensorOptions option =
+      torch::TensorOptions().dtype(dtype).device(device_type);
+
+  auto tensor = torch::empty({0}, option);
+#if defined(USE_NPU)
+  auto address = const_cast<void*>(dev_addr);
+  torch::DataPtr c10_data_ptr(address, address, [](void*) {}, tensor.device());
+
+  size_t tensor_nbytes = at::detail::computeStorageNbytesContiguous(
+      dims, tensor.dtype().itemsize());
+  torch::Storage storage;
+  // get npu storage constructor from register and construct storage
+  auto fptr = c10::GetStorageImplCreate(device_type);
+  auto allocator = c10::GetAllocator(device_type);
+  storage = fptr(c10::StorageImpl::use_byte_size_t(), 0, allocator, true);
+  storage.unsafeGetStorageImpl()->set_nbytes(tensor_nbytes);
+  storage.set_data_ptr(std::move(c10_data_ptr));
+
+  tensor.set_(storage, 0, dims);
+#endif
+  return tensor;
+}
+
 }  // namespace xllm

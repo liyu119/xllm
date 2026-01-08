@@ -15,8 +15,6 @@ limitations under the License.
 
 #pragma once
 
-#include <boost/algorithm/string.hpp>
-
 #include "core/framework/model/npu_dp_ep_padding.h"
 #include "core/framework/model_context.h"
 #include "core/layers/npu/npu_glm4_moe_decoder_layer.h"
@@ -32,7 +30,7 @@ class Glm4MoeDecoderLayerImpl : public torch::nn::Module {
   Glm4MoeDecoderLayerImpl(const ModelContext& context, const int32_t i) {
     // register submodules
     decoder_layer_ =
-        register_module("decoder_layer", layer::Glm4MoeDecoder(context, i));
+        register_module("decoder_layer", layer::NpuGlm4MoeDecoder(context, i));
   }
 
   torch::Tensor forward(torch::Tensor x,
@@ -41,7 +39,6 @@ class Glm4MoeDecoderLayerImpl : public torch::nn::Module {
                         torch::Tensor attn_mask,
                         KVCache& kv_cache,
                         const ModelInputParams& input_params,
-                        torch::Tensor expert_array,
                         aclrtEvent* event,
                         std::atomic<bool>* event_flag) {
     return decoder_layer_(x,
@@ -50,7 +47,6 @@ class Glm4MoeDecoderLayerImpl : public torch::nn::Module {
                           attn_mask,
                           kv_cache,
                           input_params,
-                          expert_array,
                           event,
                           event_flag);
   }
@@ -66,7 +62,7 @@ class Glm4MoeDecoderLayerImpl : public torch::nn::Module {
   void merge_loaded_weights() { decoder_layer_->merge_loaded_weights(); }
 
  private:
-  layer::Glm4MoeDecoder decoder_layer_{nullptr};
+  layer::NpuGlm4MoeDecoder decoder_layer_{nullptr};
 };
 TORCH_MODULE(Glm4MoeDecoderLayer);
 
@@ -84,10 +80,10 @@ class Glm4MoeModelImpl : public torch::nn::Module {
     device_ = options.device();
     dtype_ = options.dtype().toScalarType();
     num_speculative_tokens_ = model_args.num_speculative_tokens();
-    embed_tokens_ =
-        register_module("embed_tokens", layer::WordEmbedding(context));
+    npu_embed_tokens_ =
+        register_module("npu_embed_tokens", layer::NpuWordEmbedding(context));
 
-    atb_pos_emb_ = layer::PosEmbedding(context);
+    atb_pos_emb_ = layer::NpuPosEmbedding(context);
     cos_sin_ = layer::rotary::get_concat_rotary_embedding(
         64,
         model_args.max_position_embeddings(),
@@ -106,7 +102,7 @@ class Glm4MoeModelImpl : public torch::nn::Module {
       blocks_->push_back(block);
     }
 
-    norm_ = register_module("norm", layer::RMSNorm(context));
+    norm_ = register_module("norm", layer::NpuRMSNorm(context));
     dp_size_ = parallel_args.dp_size();
     std::vector<int64_t> indices;
     dp_local_tp_size_ = parallel_args.world_size() / dp_size_;
@@ -120,7 +116,7 @@ class Glm4MoeModelImpl : public torch::nn::Module {
   }
 
   torch::Tensor get_input_embeddings(torch::Tensor input_ids) {
-    return embed_tokens_(input_ids, 0);
+    return npu_embed_tokens_(input_ids, 0);
   }
 
   // tokens: [num_tokens]
@@ -141,7 +137,7 @@ class Glm4MoeModelImpl : public torch::nn::Module {
     if (inputs_embeds.defined()) {
       h = inputs_embeds;
     } else {
-      h = embed_tokens_(tokens, 0);
+      h = npu_embed_tokens_(tokens, 0);
     }
     int64_t input_length = tokens.size(0);
     torch::Tensor expert_array = torch::arange(
@@ -202,6 +198,10 @@ class Glm4MoeModelImpl : public torch::nn::Module {
       }
     }
 
+    ModelInputParams& input_params_new =
+        const_cast<ModelInputParams&>(input_params);
+    input_params_new.expert_array = expert_array;
+
     for (size_t i = 0; i < layers_.size(); i++) {
       aclrtEvent* event = nullptr;
       std::atomic<bool>* event_flag = nullptr;
@@ -219,8 +219,7 @@ class Glm4MoeModelImpl : public torch::nn::Module {
             sin_pos,
             attn_mask,
             kv_caches[i],
-            input_params,
-            expert_array,
+            input_params_new,
             event,
             event_flag);
     }
@@ -229,7 +228,7 @@ class Glm4MoeModelImpl : public torch::nn::Module {
 
   // load the weight from the checkpoint
   void load_state_dict(const StateDict& state_dict) {
-    embed_tokens_->load_state_dict(
+    npu_embed_tokens_->load_state_dict(
         state_dict.get_dict_with_prefix("embed_tokens."));
     // call each layer's load_state_dict function
     for (int i = 0; i < layers_.size(); i++) {
@@ -240,7 +239,7 @@ class Glm4MoeModelImpl : public torch::nn::Module {
   }
 
   void verify_loaded_weights(const std::string& prefix) const {
-    embed_tokens_->verify_loaded_weights(prefix + "embed_tokens.");
+    npu_embed_tokens_->verify_loaded_weights(prefix + "embed_tokens.");
     for (int i = 0; i < layers_.size(); i++) {
       layers_[i]->verify_loaded_weights(prefix + "layers." + std::to_string(i) +
                                         ".");
@@ -249,17 +248,17 @@ class Glm4MoeModelImpl : public torch::nn::Module {
   }
 
   void merge_loaded_weights() {
-    embed_tokens_->merge_loaded_weights();
+    npu_embed_tokens_->merge_loaded_weights();
     for (int i = 0; i < layers_.size(); i++) {
       layers_[i]->merge_loaded_weights();
     }
     norm_->merge_loaded_weights();
   }
 
-  layer::WordEmbedding get_word_embedding() { return embed_tokens_; }
+  layer::NpuWordEmbedding get_npu_word_embedding() { return npu_embed_tokens_; }
 
-  void set_word_embedding(layer::WordEmbedding& word_embedding) {
-    embed_tokens_ = word_embedding;
+  void set_npu_word_embedding(layer::NpuWordEmbedding& npu_word_embedding) {
+    npu_embed_tokens_ = npu_word_embedding;
   }
 
  private:
@@ -275,83 +274,20 @@ class Glm4MoeModelImpl : public torch::nn::Module {
   int32_t num_speculative_tokens_ = 0;
   at::Device device_;
   torch::Dtype dtype_;
-  layer::WordEmbedding embed_tokens_{nullptr};
+  layer::NpuWordEmbedding npu_embed_tokens_{nullptr};
   layer::AttentionMask attn_mask_;
-  layer::RMSNorm norm_{nullptr};
+  layer::NpuRMSNorm norm_{nullptr};
   torch::Tensor cos_sin_;
-  layer::PosEmbedding atb_pos_emb_{nullptr};
+  layer::NpuPosEmbedding atb_pos_emb_{nullptr};
 
   std::vector<int64_t> mrope_section_;
 };
 TORCH_MODULE(Glm4MoeModel);
 
-class Glm4MoeForCausalLMImpl : public torch::nn::Module {
+class Glm4MoeForCausalLMImpl : public LlmForCausalLMImplBase<Glm4MoeModel> {
  public:
-  Glm4MoeForCausalLMImpl(const ModelContext& context) {
-    model_ = register_module("model", Glm4MoeModel(context));
-    lm_head_ = register_module("lm_head", layer::LmHead(context));
-  }
-
-  torch::Tensor get_input_embeddings(torch::Tensor input_ids) {
-    return model_->get_input_embeddings(input_ids);
-  }
-
-  // tokens: [num_tokens]
-  // positions: [num_tokens] token pos in the sequence
-  // returns: [num_tokens, hidden_size]
-  torch::Tensor forward(const torch::Tensor& tokens,
-                        const torch::Tensor& positions,
-                        std::vector<KVCache>& kv_caches,
-                        const ModelInputParams& input_params) {
-    return model_(tokens, positions, kv_caches, input_params);
-  }
-
-  // hidden_states: [num_tokens, hidden_size]
-  // seleted_idxes: [num_tokens]
-  // returns: [num_tokens, vocab_size]
-  torch::Tensor logits(const torch::Tensor& hidden_states,
-                       const torch::Tensor& seleted_idxes) {
-    // select tokens if provided
-    auto h = hidden_states;
-    return lm_head_(hidden_states, seleted_idxes, 0);
-  }
-
-  void load_model(std::unique_ptr<ModelLoader> loader,
-                  std::string prefix = "model." /*llm model weight prefix*/) {
-    for (const auto& state_dict : loader->get_state_dicts()) {
-      model_->load_state_dict(state_dict->get_dict_with_prefix(prefix));
-      lm_head_->load_state_dict(state_dict->get_dict_with_prefix("lm_head."));
-    }
-
-    // verify
-    model_->verify_loaded_weights(prefix);
-    lm_head_->verify_loaded_weights("lm_head.");
-
-    model_->merge_loaded_weights();
-    lm_head_->merge_loaded_weights();
-  }
-
-  virtual void prepare_expert_weight(int32_t layer_id,
-                                     const std::vector<int32_t>& expert_ids) {
-    return;
-  }
-  virtual void update_expert_weight(int32_t layer_id) { return; }
-
-  layer::LmHead get_lm_head() { return lm_head_; }
-
-  void set_lm_head(layer::LmHead& head) { lm_head_ = head; }
-
-  layer::WordEmbedding get_word_embedding() {
-    return model_->get_word_embedding();
-  }
-
-  void set_word_embedding(layer::WordEmbedding& word_embedding) {
-    model_->set_word_embedding(word_embedding);
-  }
-
- private:
-  Glm4MoeModel model_{nullptr};
-  layer::LmHead lm_head_{nullptr};
+  Glm4MoeForCausalLMImpl(const ModelContext& context)
+      : LlmForCausalLMImplBase<Glm4MoeModel>(context) {}
 };
 TORCH_MODULE(Glm4MoeForCausalLM);
 

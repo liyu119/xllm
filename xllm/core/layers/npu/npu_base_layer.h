@@ -104,7 +104,7 @@ enum class LinearTypeV2 : int {
 class BaseLayer : public torch::nn::Module {
  public:
   explicit BaseLayer(const ModelContext& context);
-  virtual ~BaseLayer() {};
+  virtual ~BaseLayer() override = default;
 
   atb::Status execute_node(atb_speed::Model::Node& node,
                            int nodeId = 0,
@@ -175,7 +175,8 @@ class BaseLayer : public torch::nn::Module {
   at::Device device_;
   std::string name_;
   torch::ScalarType dtype_;
-  std::vector<int> placeholder_vec_;
+  std::vector<int32_t> placeholder_vec_;
+  std::vector<int32_t> placeholder_vec_zero_;
   xllm::ParallelArgs parallel_args_;
   std::function<void(const std::string&, std::function<int()>)> run_task_func_;
   std::string quantize_type_;

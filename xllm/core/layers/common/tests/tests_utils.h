@@ -30,15 +30,54 @@ limitations under the License.
 #include "framework/quant_args.h"
 #include "framework/state_dict/state_dict.h"
 
+#define TORCH_VERSION_LESS_THAN(major, minor) \
+  (TORCH_VERSION_MAJOR < (major) ||           \
+   (TORCH_VERSION_MAJOR == (major) && TORCH_VERSION_MINOR < (minor)))
+
+#if defined(USE_NPU) && TORCH_VERSION_LESS_THAN(2, 7)
+#define USE_NPU_HCCL_BACKEND 1
+#include <torch_npu/csrc/distributed/ProcessGroupHCCL.hpp>
+using MockBackendBase = c10d_npu::ProcessGroupHCCL;
+#else
+#define USE_NPU_HCCL_BACKEND 0
+using MockBackendBase = c10d::Backend;
+#endif
+
 namespace xllm {
 namespace layer {
 namespace test {
 
+namespace detail {
+
+#if USE_NPU_HCCL_BACKEND
+inline c10::intrusive_ptr<c10d::TCPStore> createTCPStore(int64_t rank) {
+  c10d::TCPStoreOptions opts;
+  opts.port = 0;
+  opts.isServer = (rank == 0);
+  opts.waitWorkers = true;
+  return c10::make_intrusive<c10d::TCPStore>("127.0.0.1", opts);
+}
+#endif
+
+}  // namespace detail
+
 // Mock Backend for testing - minimal implementation for tp=1 tests
-class MockBackend : public c10d::Backend {
+class MockBackend : public MockBackendBase {
  public:
+#if USE_NPU_HCCL_BACKEND
   MockBackend(int64_t rank, int64_t world_size)
-      : c10d::Backend(rank, world_size), rank_(rank), world_size_(world_size) {}
+      : MockBackendBase(detail::createTCPStore(rank),
+                        rank,
+                        world_size,
+                        MockBackendBase::Options::create()),
+        rank_(rank),
+        world_size_(world_size) {}
+#else
+  MockBackend(int64_t rank, int64_t world_size)
+      : MockBackendBase(rank, world_size),
+        rank_(rank),
+        world_size_(world_size) {}
+#endif
 
   c10::intrusive_ptr<c10d::Work> allreduce(
       std::vector<torch::Tensor>& tensors,
@@ -125,8 +164,7 @@ class MockBackend : public c10d::Backend {
 
   int64_t getSize() const { return world_size_; }
 
-#if TORCH_VERSION_MAJOR > 2 || \
-    (TORCH_VERSION_MAJOR == 2 && TORCH_VERSION_MINOR >= 7)
+#if !TORCH_VERSION_LESS_THAN(2, 7)
   void shutdown() override {
     // Mock implementation - do nothing
   }
@@ -162,48 +200,31 @@ class MockProcessGroup : public xllm::ProcessGroup {
   }
 };
 
-// Helper function to create all-ones tensor
-torch::Tensor CreateOnesTensor(const std::vector<int64_t>& shape,
-                               const torch::TensorOptions& options);
-
-// Helper function to create full tensor with specific value
-torch::Tensor CreateFullTensor(const std::vector<int64_t>& shape,
-                               float value,
-                               const torch::TensorOptions& options);
-
 // Helper function to create custom input tensor for precision testing
-torch::Tensor CreateCustomInput(const std::vector<int64_t>& shape,
-                                const std::vector<float>& values,
-                                const torch::TensorOptions& options);
-
-// Helper function to create custom residual tensor for precision testing
-torch::Tensor CreateCustomResidual(const std::vector<int64_t>& shape,
-                                   const std::vector<float>& values,
-                                   const torch::TensorOptions& options);
+torch::Tensor create_custom_input(const std::vector<int64_t>& shape,
+                                  const std::vector<float>& values,
+                                  const torch::TensorOptions& options);
 
 // Helper function to verify tensor values are close to expected
-void VerifyTensorClose(const torch::Tensor& actual,
-                       const torch::Tensor& expected,
-                       double rtol = 1e-5,
-                       double atol = 1e-8);
+void verify_tensor_close(const torch::Tensor& actual,
+                         const torch::Tensor& expected,
+                         double rtol = 1e-5,
+                         double atol = 1e-8);
 
 // Helper function to verify precision against expected output
-void VerifyPrecision(const torch::Tensor& actual_output,
-                     const std::vector<float>& expected_values,
-                     double rtol = 1e-3,
-                     double atol = 1e-4);
+void verify_precision(const torch::Tensor& actual_output,
+                      const std::vector<float>& expected_values,
+                      double rtol = 1e-3,
+                      double atol = 1e-4);
 
 // Helper function to create default model arguments for testing
-ModelArgs CreateDefaultModelArgs();
+ModelArgs create_default_model_args();
 
 // Helper function to create default quantization arguments for testing
-QuantArgs CreateDefaultQuantArgs();
-
-// Helper function to create default tensor options for testing
-torch::TensorOptions CreateDefaultTensorOptions();
+QuantArgs create_default_quant_args();
 
 // Helper function to create default parallel arguments for testing
-ParallelArgs CreateDefaultParallelArgs(
+ParallelArgs create_default_parallel_args(
     std::unique_ptr<xllm::ProcessGroup>& mock_process_group);
 
 // create a tensor with a seeded random number generator (based on key and

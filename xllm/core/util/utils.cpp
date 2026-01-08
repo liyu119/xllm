@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_split.h>
+#include <butil/base64.h>
 
 #include <algorithm>
 #include <boost/algorithm/string.hpp>
@@ -65,8 +66,8 @@ std::pair<int, int> find_ones_indices(std::vector<int>& q_seq_lens) {
 }
 
 torch::ScalarType parse_dtype(const std::string& dtype_str,
-                              const torch::Device& device) {
-  if (device.is_cpu()) {
+                              const std::optional<torch::Device>& device) {
+  if (device.has_value() && device.value().is_cpu()) {
     // cpu only supports float32 for now
     return torch::kFloat32;
   }
@@ -86,7 +87,8 @@ torch::ScalarType parse_dtype(const std::string& dtype_str,
   if (dtype_str.empty() || boost::iequals(dtype_str, "auto")) {
     return torch::kFloat16;
   }
-  CHECK(false) << "Unsupported dtype: " << dtype_str << " on device " << device;
+  CHECK(false) << "Unsupported dtype: " << dtype_str << " on device "
+               << device.value();
 }
 
 std::optional<std::vector<uint32_t>> parse_batch_sizes(
@@ -243,7 +245,6 @@ torch::Tensor convert_rec_tensor_to_torch(
   }
 }
 
-namespace {
 torch::ScalarType datatype_proto_to_torch(const std::string& proto_datatype) {
   static const std::unordered_map<std::string, torch::ScalarType> kDatatypeMap =
       {{"BOOL", torch::kBool},
@@ -253,7 +254,9 @@ torch::ScalarType datatype_proto_to_torch(const std::string& proto_datatype) {
        {"UINT64", torch::kInt64},
        {"FP32", torch::kFloat},
        {"FP64", torch::kDouble},
-       {"BYTES", torch::kByte}};
+       {"BYTES", torch::kByte},
+       {"FP16", torch::kHalf},
+       {"BF16", torch::kBFloat16}};
 
   auto iter = kDatatypeMap.find(proto_datatype);
   if (iter == kDatatypeMap.end()) {
@@ -264,6 +267,7 @@ torch::ScalarType datatype_proto_to_torch(const std::string& proto_datatype) {
   return iter->second;
 }
 
+namespace {
 template <typename T>
 const void* get_data_from_contents(const proto::TensorContents& contents,
                                    const std::string& datatype) {
@@ -316,12 +320,17 @@ const void* get_data_from_contents(const proto::TensorContents& contents,
       return nullptr;
     }
     return contents.fp64_contents().data();
+  } else if constexpr (std::is_same_v<T, uint8_t>) {
+    return static_cast<const void*>(contents.bytes_contents().data());
   } else {
     LOG(FATAL) << "Unsupported data type for TensorContents: "
                << typeid(T).name();
     return nullptr;
   }
+  return nullptr;
 }
+
+}  // namespace
 
 std::string torch_datatype_to_proto(torch::ScalarType torch_dtype) {
   static const std::unordered_map<torch::ScalarType, std::string> kDatatypeMap =
@@ -332,7 +341,9 @@ std::string torch_datatype_to_proto(torch::ScalarType torch_dtype) {
        {torch::kInt64, "UINT64"},
        {torch::kFloat, "FP32"},
        {torch::kDouble, "FP64"},
-       {torch::kByte, "BYTES"}};
+       {torch::kByte, "BYTES"},
+       {torch::kHalf, "FP16"},
+       {torch::kBFloat16, "BF16"}};
 
   auto iter = kDatatypeMap.find(torch_dtype);
   if (iter == kDatatypeMap.end()) {
@@ -344,6 +355,7 @@ std::string torch_datatype_to_proto(torch::ScalarType torch_dtype) {
   return iter->second;
 }
 
+namespace {
 template <typename T>
 bool set_data_to_contents(proto::TensorContents* contents,
                           const torch::Tensor& tensor,
@@ -395,8 +407,7 @@ bool set_data_to_contents(proto::TensorContents* contents,
     }
   } else if constexpr (std::is_same_v<T, uint8_t>) {
     const char* char_ptr = reinterpret_cast<const char*>(data_ptr);
-    std::string bytes(char_ptr, data_count * sizeof(T));
-    contents->mutable_bytes_contents()->Add(std::move(bytes));
+    contents->set_bytes_contents(char_ptr, data_count * sizeof(T));
   } else {
     LOG(ERROR) << "Unsupported data type for TensorContents: "
                << typeid(T).name();
@@ -464,6 +475,14 @@ torch::Tensor proto_to_torch(const proto::Tensor& proto_tensor) {
   } else if (proto_datatype == "FP64") {
     data_ptr = get_data_from_contents<double>(proto_contents, proto_datatype);
     data_count = proto_contents.fp64_contents_size();
+  } else if (proto_datatype == "BF16") {
+    data_ptr = get_data_from_contents<uint8_t>(proto_contents, proto_datatype);
+    data_count = proto_contents.bytes_contents().size() /
+                 static_cast<size_t>(sizeof(torch::BFloat16));
+  } else if (proto_datatype == "FP16") {
+    data_ptr = get_data_from_contents<uint8_t>(proto_contents, proto_datatype);
+    data_count = proto_contents.bytes_contents().size() /
+                 static_cast<size_t>(sizeof(torch::Half));
   }
 
   if (data_ptr == nullptr) {
@@ -545,6 +564,31 @@ bool torch_to_proto(const torch::Tensor& torch_tensor,
       data_set_success = set_data_to_contents<uint8_t>(
           proto_contents, torch_tensor, proto_datatype);
       break;
+    case torch::kBFloat16: {
+      // Need to convert bfloat16 to uint8_t for storage
+      auto bfloat16_ptr = torch_tensor.data_ptr<torch::BFloat16>();
+      uint8_t* uint8_ptr = reinterpret_cast<uint8_t*>(bfloat16_ptr);
+      torch::Tensor uint8_tensor =
+          torch::from_blob(uint8_ptr,
+                           {static_cast<int64_t>(torch_tensor.numel() *
+                                                 sizeof(torch::BFloat16))},
+                           torch::dtype(torch::kUInt8));
+      data_set_success = set_data_to_contents<uint8_t>(
+          proto_contents, uint8_tensor, proto_datatype);
+      break;
+    }
+    case torch::kHalf: {
+      // Need to convert float16 to uint8_t for storage
+      auto float16_ptr = torch_tensor.data_ptr<torch::Half>();
+      uint8_t* uint8_ptr = reinterpret_cast<uint8_t*>(float16_ptr);
+      torch::Tensor uint8_tensor = torch::from_blob(
+          uint8_ptr,
+          {static_cast<int64_t>(torch_tensor.numel() * sizeof(torch::Half))},
+          torch::dtype(torch::kUInt8));
+      data_set_success = set_data_to_contents<uint8_t>(
+          proto_contents, uint8_tensor, proto_datatype);
+      break;
+    }
     default:
       LOG(ERROR) << "Unsupported torch dtype for serialization: "
                  << torch::toString(torch_dtype);
@@ -572,10 +616,18 @@ bool torch_to_proto(const torch::Tensor& torch_tensor,
     actual_count = proto_contents->fp32_contents_size();
   } else if (proto_datatype == "FP64") {
     actual_count = proto_contents->fp64_contents_size();
-  } else if (proto_datatype == "BYTES") {
-    for (const auto& bytes : proto_contents->bytes_contents()) {
+  } else if (proto_datatype == "STRING") {
+    for (const auto& bytes : proto_contents->string_contents()) {
       actual_count += bytes.size() / sizeof(uint8_t);
     }
+  } else if (proto_datatype == "BYTES") {
+    actual_count += proto_contents->bytes_contents().size();
+  } else if (proto_datatype == "BF16") {
+    actual_count = proto_contents->bytes_contents().size() /
+                   static_cast<size_t>(sizeof(torch::BFloat16));
+  } else if (proto_datatype == "FP16") {
+    actual_count = proto_contents->bytes_contents().size() /
+                   static_cast<size_t>(sizeof(torch::Half));
   }
 
   if (actual_count != static_cast<size_t>(total_elements)) {

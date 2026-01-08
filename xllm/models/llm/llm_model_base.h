@@ -118,6 +118,7 @@ class LlmModelImplBase : public torch::nn::Module {
 
     std::optional<torch::Tensor> residual;
     for (size_t i = 0; i < layers_.size(); i++) {
+      attn_metadata.plan_info->layer_id = i;
       auto& layer = layers_[i];
       h = layer(h,
                 residual,
@@ -150,9 +151,6 @@ class LlmModelImplBase : public torch::nn::Module {
 
  protected:
   torch::Tensor cos_sin_;
-  int device_id = 0;
-  int dp_rank_ = 0;
-
   std::vector<int64_t> mrope_section_;
   layer::WordEmbedding embed_tokens_{nullptr};
   layer::RMSNorm norm_{nullptr};
@@ -173,7 +171,6 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
     tie_word_embeddings = context.get_model_args().tie_word_embeddings();
     // register submodules
     model_ = register_module("model", LlmModelType(context));
-
     lm_head_ = register_module("lm_head", layer::LmHead(context));
   }
 
@@ -198,7 +195,6 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
                                const torch::Tensor& seleted_idxes) {
     // select tokens if provided
     auto h = hidden_states;
-
     if (seleted_idxes.defined()) {
       h = h.index_select(/*dim=*/0, seleted_idxes);
     }
@@ -240,7 +236,6 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
  protected:
   // parameter members, must be registered
   LlmModelType model_{nullptr};
-  int device_id = 0;
   bool tie_word_embeddings{false};
   // test
   layer::LmHead lm_head_{nullptr};

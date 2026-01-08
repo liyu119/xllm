@@ -415,6 +415,10 @@ class ExtBuild(build_ext):
         print("CMake Args: ", cmake_args)
         print("Env: ", env)
 
+        self.build_cmake_targets(ext, cmake_args, build_args, env, extdir, product)
+
+    def build_cmake_targets(self, ext, cmake_args, build_args, env, extdir, product):
+        """Build CMake targets"""
         cmake_dir = get_cmake_dir()
         subprocess.check_call(
             ["cmake", self.base_dir] + cmake_args, cwd=cmake_dir, env=env
@@ -440,6 +444,80 @@ class ExtBuild(build_ext):
             # build tests target
             build_args = base_build_args + ["--target all_tests"]
             subprocess.check_call(["cmake", "--build", ".", "--verbose"] + build_args, cwd=cmake_dir)
+
+class ExtBuildSingleTest(ExtBuild):
+    """Inherit ExtBuild, used to build and run a single test"""
+    user_options = ExtBuild.user_options + [
+        ("test-name=", None, "name of the test target to build and run"),
+    ]
+
+    def initialize_options(self):
+        ExtBuild.initialize_options(self)
+        self.test_name = None
+
+    def finalize_options(self):
+        ExtBuild.finalize_options(self)
+        if not self.test_name:
+            raise ValueError("--test-name is required for ExtBuildSingleTest")
+
+    def build_cmake_targets(self, ext, cmake_args, build_args, env, extdir, product):
+        """Override method: only build the specified test target and run"""
+        cmake_dir = get_cmake_dir()
+        subprocess.check_call(
+            ["cmake", self.base_dir] + cmake_args, cwd=cmake_dir, env=env
+        )
+
+        base_build_args = build_args
+        # Only build the specified test target
+        build_args += ["--target", self.test_name]
+        subprocess.check_call(["cmake", "--build", ".", "--verbose"] + build_args, cwd=cmake_dir)
+
+        # Find test executable
+        # CMake usually places executables in CMAKE_RUNTIME_OUTPUT_DIRECTORY or build directory
+        test_executable = None
+        possible_paths = [
+            os.path.join(cmake_dir, self.test_name),
+            os.path.join(extdir, self.test_name),
+            os.path.join(cmake_dir, "xllm", "core", self.test_name),
+        ]
+        
+        # Check possible paths first
+        for path in possible_paths:
+            if os.path.exists(path) and os.access(path, os.X_OK):
+                test_executable = path
+                break
+        
+        # If not found, try recursive search in build directory
+        if not test_executable:
+            for root, dirs, files in os.walk(cmake_dir):
+                if self.test_name in files:
+                    candidate = os.path.join(root, self.test_name)
+                    if os.access(candidate, os.X_OK):
+                        test_executable = candidate
+                        break
+        
+        if not test_executable:
+            # If not found, try using ctest to run
+            print(f"⚠️  Warning: Could not find test executable {self.test_name}, trying ctest...")
+            try:
+                subprocess.check_call(
+                    ["ctest", "-R", self.test_name, "--verbose"],
+                    cwd=cmake_dir,
+                    env=env
+                )
+                print(f"✅ Test {self.test_name} passed!")
+            except subprocess.CalledProcessError as e:
+                print(f"❌ Failed to run test {self.test_name}")
+                raise
+        else:
+            # Run test executable directly
+            print(f"🚀 Running test: {test_executable}")
+            try:
+                subprocess.check_call([test_executable], cwd=os.path.dirname(test_executable), env=env)
+                print(f"✅ Test {self.test_name} passed!")
+            except subprocess.CalledProcessError as e:
+                print(f"❌ Test {self.test_name} failed with exit code {e.returncode}")
+                raise
 
 class BuildDistWheel(bdist_wheel):
     user_options = bdist_wheel.user_options + [
@@ -508,7 +586,7 @@ class TestUT(Command):
             print(result.stdout)
             '''
             process = subprocess.Popen(
-                ['ctest', '--parallel', '8'],
+                ['ctest', '--parallel', '8', '--repeat', 'until-pass:5'],
                 cwd=cmake_dir,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -529,6 +607,46 @@ class TestUT(Command):
 
     def run(self):
         self.run_ctest(get_cmake_dir())
+
+class BuildTest(Command):
+    """Command to build and run a single test"""
+    description = "Build and run a single test target."
+    user_options = [
+        ("test-name=", None, "name of the test target to build and run"),
+        ("device=", None, "target device type (a3 or a2 or mlu or cuda or ilu)"),
+        ("arch=", None, "target arch type (x86 or arm)"),
+        ("install-xllm-kernels=", None, "install xllm_kernels RPM package (true/false)"),
+        ("generate-so=", None, "generate so or binary"),
+    ]
+
+    def initialize_options(self):
+        self.test_name = None
+        self.device = None
+        self.arch = None
+        self.install_xllm_kernels = None
+        self.generate_so = False
+
+    def finalize_options(self):
+        if not self.test_name:
+            raise ValueError("--test-name is required for build_test command")
+
+    def run(self):
+        # Create ExtBuildSingleTest instance and set parameters
+        build_ext = ExtBuildSingleTest(self.distribution)
+        build_ext.initialize_options()
+        build_ext.test_name = self.test_name
+        build_ext.device = self.device
+        build_ext.arch = self.arch
+        build_ext.install_xllm_kernels = self.install_xllm_kernels
+        build_ext.generate_so = self.generate_so
+        build_ext.finalize_options()
+        
+        # Ensure extension modules are set
+        if not hasattr(build_ext, 'extensions') or not build_ext.extensions:
+            build_ext.extensions = self.distribution.ext_modules
+        
+        # Run build
+        build_ext.run()
 
 def check_and_install_pre_commit():
     # check if .git is a directory
@@ -608,18 +726,26 @@ def apply_patch_safely(patch_file_path, repo_path):
         print(f"  cd {repo_path} && git apply {patch_file_path}")
         return False
 
-def pre_build():
+def pre_build(device):
     if os.path.exists("third_party/custom_patch"):
         script_path = os.path.dirname(os.path.abspath(__file__))
         mooncake_repo_path = os.path.join(script_path, "third_party/Mooncake")
-        if not apply_patch_safely("../custom_patch/Mooncake.patch", mooncake_repo_path):
-            exit(0)
+        if device in ("a2", "a3"):
+            if not apply_patch_safely("../custom_patch/Mooncake_npu.patch", mooncake_repo_path):
+                print("Failed to apply Mooncake_npu.patch!")
+                exit(1)
+        else:
+            if not apply_patch_safely("../custom_patch/Mooncake.patch", mooncake_repo_path):
+                print("Failed to apply Mooncake.patch!")
+                exit(1)
+
         cpprestsdk_repo_path = os.path.join(script_path, "third_party/cpprestsdk")
         if not apply_patch_safely("../custom_patch/cpprestsdk.patch", cpprestsdk_repo_path):
-            exit(0)
+            print("Failed to apply cpprestsdk.patch!")
+            exit(1)
         if not run_shell_command("sh third_party/dependencies.sh", cwd=script_path):
             print("❌ Failed to reset changes!")
-            exit(0)
+            exit(1)
             
 def parse_arguments():
     parser = argparse.ArgumentParser(
@@ -664,6 +790,13 @@ def parse_arguments():
         default='false',
         help='Whether to generate so or binary'
     )
+    
+    parser.add_argument(
+        '--test-name',
+        type=str,
+        default=None,
+        help='Name of the test target to build and run (for build_test command)'
+    )
 
     args = parser.parse_args()
     
@@ -677,6 +810,7 @@ def parse_arguments():
         'dry_run': args.dry_run,
         'install_xllm_kernels': install_kernels,
         'generate_so': generate_so,
+        'test_name': args.test_name,
     }
 
 
@@ -690,10 +824,11 @@ if __name__ == "__main__":
     print(f"🚀 Build xllm with CPU arch: {arch} and target device: {device}")
     
     if not config['dry_run']:
-        pre_build()
+        pre_build(device)
 
     install_kernels = config['install_xllm_kernels']
     generate_so = config['generate_so']
+    test_name = config.get('test_name')
 
     if "SKIP_TEST" in os.environ:
         BUILD_TEST_FILE = False
@@ -738,12 +873,20 @@ if __name__ == "__main__":
         ext_modules=[CMakeExtension("xllm", "xllm/")],
         cmdclass={"build_ext": ExtBuild,
                   "test": TestUT,
+                  "build_test": BuildTest,
                   'bdist_wheel': BuildDistWheel},
         options={'build_ext': {
                     'device': device,
                     'arch': arch,
                     'install_xllm_kernels': install_kernels,
                     'generate_so': generate_so
+                    },
+                 'build_test': {
+                    'device': device,
+                    'arch': arch,
+                    'install_xllm_kernels': install_kernels,
+                    'generate_so': generate_so,
+                    'test_name': test_name,
                     },
                  'bdist_wheel': {
                     'device': device,

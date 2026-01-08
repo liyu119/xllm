@@ -78,13 +78,15 @@ class Engine {
                               const std::vector<uint64_t>& src_blocks,
                               const int32_t dst_dp_rank,
                               const std::vector<uint64_t>& dst_blocks) {
-    LOG(FATAL) << " pull_kv_blocks is notimplemented!";
+    LOG(FATAL) << " pull_kv_blocks is not implemented!";
+    return false;
   };
 
   virtual std::vector<folly::SemiFuture<uint32_t>> transfer_kv_blocks(
       const uint32_t dp_rank,
       const std::vector<BlockTransferInfo>& block_transfer_info) {
     LOG(FATAL) << " transfer_kv_blocks is not implemented!";
+    return {};
   };
 
   virtual void transfer_kv_blocks(
@@ -120,6 +122,7 @@ class Engine {
                             const std::vector<uint16_t>& ports,
                             const int32_t src_dp_size) {
     LOG(FATAL) << " link_cluster is notimplemented!";
+    return false;
   };
 
   virtual bool unlink_cluster(const std::vector<uint64_t>& cluster_ids,
@@ -128,6 +131,7 @@ class Engine {
                               const std::vector<uint16_t>& ports,
                               const int32_t dp_size) {
     LOG(FATAL) << " unlink_cluster is notimplemented!";
+    return false;
   };
 
   struct KVCacheCapacity {

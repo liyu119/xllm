@@ -129,7 +129,7 @@ enum DecoderLayerTensorId : int {
 
 static const uint64_t WEIGHT_COUNT_PER_LAYER = 84;
 
-DeepseekV2DecoderLayerImpl::DeepseekV2DecoderLayerImpl(
+NpuDeepseekV2DecoderLayerImpl::NpuDeepseekV2DecoderLayerImpl(
     const ModelContext& context,
     const int32_t layer_id)
     : BaseLayer(context),
@@ -182,9 +182,11 @@ DeepseekV2DecoderLayerImpl::DeepseekV2DecoderLayerImpl(
   CHECK_EQ(parallel_args.world_size(), dp_size_ * dp_local_tp_size_);
   dp_local_tp_rank_ = parallel_args.rank() % dp_local_tp_size_;
 
-  param_from_args(prefill_param_, model_args, parallel_args, true);
-  param_from_args(decode_param_, model_args, parallel_args, false);
-  param_from_args(decode_mla_param_, model_args, parallel_args, false);
+  param_from_args(prefill_param_, model_args, parallel_args, true, false);
+  param_from_args(
+      prefill_param_prefixcache_, model_args, parallel_args, true, true);
+  param_from_args(decode_param_, model_args, parallel_args, false, false);
+  param_from_args(decode_mla_param_, model_args, parallel_args, false, false);
   decode_mla_param_.enableCustomizeMla = FLAGS_enable_customize_mla_kernel;
 
   loader_ = std::make_unique<DeekseekV2DecoderLoader>(
@@ -205,11 +207,12 @@ DeepseekV2DecoderLayerImpl::DeepseekV2DecoderLayerImpl(
   initialize_tensors(options);
 }
 
-void DeepseekV2DecoderLayerImpl::initialize_tensors(
+void NpuDeepseekV2DecoderLayerImpl::initialize_tensors(
     const torch::TensorOptions& options) {
   // initializ placeholder
   atb_weight_tensors_.resize(WEIGHT_COUNT_PER_LAYER);
   placeholder_vec_ = {1};
+  placeholder_vec_zero_ = {0};
   int_tensor_placeholder_ = torch::ones({1}).to(torch::kInt32).to(device_);
   slot_tensor_placeholder_ = torch::full({1}, 0).to(torch::kInt32).to(device_);
   block_tables_placeholder_ =
@@ -237,12 +240,14 @@ void DeepseekV2DecoderLayerImpl::initialize_tensors(
   }
 }
 
-void DeepseekV2DecoderLayerImpl::param_from_args(
+void NpuDeepseekV2DecoderLayerImpl::param_from_args(
     atb_speed::deepseekV2::DecoderLayerParam& param,
     const ModelArgs& args,
     const ParallelArgs& parallel_args,
-    bool is_prefill) {
-  initialize_basic_parameters(param, args, parallel_args, is_prefill);
+    bool is_prefill,
+    bool is_prefixcache) {
+  initialize_basic_parameters(
+      param, args, parallel_args, is_prefill, is_prefixcache);
   initialize_attention_parameters(param, args, parallel_args);
   initialize_mlp_parameters(param, args, parallel_args);
   initialize_parallel_parameters(param, parallel_args);
@@ -250,14 +255,19 @@ void DeepseekV2DecoderLayerImpl::param_from_args(
   initialize_kimi_k2_parameters(param, args, is_prefill);
 }
 
-void DeepseekV2DecoderLayerImpl::initialize_basic_parameters(
+void NpuDeepseekV2DecoderLayerImpl::initialize_basic_parameters(
     atb_speed::deepseekV2::DecoderLayerParam& param,
     const ModelArgs& args,
     const ParallelArgs& parallel_args,
-    bool is_prefill) {
+    bool is_prefill,
+    bool is_prefixcache) {
   param.isFA = false;
+  param.enableFusedMLA = FLAGS_enable_prefix_cache;
   param.isPrefill = is_prefill;
   param.isBF16 = args.dtype() == "bfloat16";
+  param.enablePrefixCache =
+      is_prefill && FLAGS_enable_prefix_cache && is_prefixcache;
+  param.isNzCache = FLAGS_enable_prefix_cache;
   param.enableSwiGLU = true;
   param.enableLcoc = true;
   // TODO: modify xllm_atb_layers
@@ -306,7 +316,7 @@ void DeepseekV2DecoderLayerImpl::initialize_basic_parameters(
   qk_rope_head_dim_ = args.qk_rope_head_dim();
 }
 
-void DeepseekV2DecoderLayerImpl::initialize_attention_parameters(
+void NpuDeepseekV2DecoderLayerImpl::initialize_attention_parameters(
     atb_speed::deepseekV2::DecoderLayerParam& param,
     const ModelArgs& args,
     const ParallelArgs& parallel_args) {
@@ -328,11 +338,10 @@ void DeepseekV2DecoderLayerImpl::initialize_attention_parameters(
   }
 
   param.enableFA3 = false;           // TODO
-  param.isNzCache = false;           // TODO
   param.enableKvQuantLayer = false;  // TODO
 }
 
-void DeepseekV2DecoderLayerImpl::initialize_mlp_parameters(
+void NpuDeepseekV2DecoderLayerImpl::initialize_mlp_parameters(
     atb_speed::deepseekV2::DecoderLayerParam& param,
     const ModelArgs& args,
     const ParallelArgs& parallel_args) {
@@ -409,7 +418,7 @@ void DeepseekV2DecoderLayerImpl::initialize_mlp_parameters(
   }
 }
 
-void DeepseekV2DecoderLayerImpl::initialize_kimi_k2_parameters(
+void NpuDeepseekV2DecoderLayerImpl::initialize_kimi_k2_parameters(
     atb_speed::deepseekV2::DecoderLayerParam& param,
     const ModelArgs& args,
     bool is_prefill) {
@@ -431,7 +440,7 @@ void DeepseekV2DecoderLayerImpl::initialize_kimi_k2_parameters(
   param.enableGMMSwigluQuant = enable_gmmswigluquant;
 }
 
-void DeepseekV2DecoderLayerImpl::initialize_parallel_parameters(
+void NpuDeepseekV2DecoderLayerImpl::initialize_parallel_parameters(
     atb_speed::deepseekV2::DecoderLayerParam& param,
     const ParallelArgs& parallel_args) {
   param.lmHeadLocalTp = dp_local_tp_size_;
@@ -445,7 +454,7 @@ void DeepseekV2DecoderLayerImpl::initialize_parallel_parameters(
   param.maxDecodeDpTokenSize = 0;  // TODO
 }
 
-void DeepseekV2DecoderLayerImpl::initialize_quantization_parameters(
+void NpuDeepseekV2DecoderLayerImpl::initialize_quantization_parameters(
     atb_speed::deepseekV2::DecoderLayerParam& param) {
   if (quantize_type_ == "") {
     param.moePackQuantType = static_cast<int>(PackType::ALL_FP);
@@ -500,7 +509,7 @@ void DeepseekV2DecoderLayerImpl::initialize_quantization_parameters(
   }
 }
 
-void DeepseekV2DecoderLayerImpl::merge_loaded_weights() {
+void NpuDeepseekV2DecoderLayerImpl::merge_loaded_weights() {
   loader_->merge_loaded_weights();
   auto& at_weight_tensors = loader_->get_at_weight_tensors();
   c10_npu::NPUCachingAllocator::emptyCache();
@@ -511,7 +520,7 @@ void DeepseekV2DecoderLayerImpl::merge_loaded_weights() {
   init_layer();
 }
 
-torch::Tensor DeepseekV2DecoderLayerImpl::build_expert_routing_map(
+torch::Tensor NpuDeepseekV2DecoderLayerImpl::build_expert_routing_map(
     std::vector<int32_t> expert_lists) {
   std::unordered_map<int64_t, std::vector<int64_t>> expert_routing_map;
 
@@ -542,7 +551,7 @@ torch::Tensor DeepseekV2DecoderLayerImpl::build_expert_routing_map(
   return result;
 }
 
-std::string DeepseekV2DecoderLayerImpl::get_expert_shm_key(
+std::string NpuDeepseekV2DecoderLayerImpl::get_expert_shm_key(
     int32_t layer_id,
     int32_t expert_index,
     const std::string& suffix) {
@@ -552,7 +561,7 @@ std::string DeepseekV2DecoderLayerImpl::get_expert_shm_key(
   return shm_key;
 }
 
-void DeepseekV2DecoderLayerImpl::prepare_expert_weight(
+void NpuDeepseekV2DecoderLayerImpl::prepare_expert_weight(
     const std::vector<int32_t>& expert_list) {
   auto& at_weight_tensors = loader_->get_at_weight_tensors();
   auto& experts_weights = loader_->get_experts_weight_tensors();
@@ -626,7 +635,7 @@ void DeepseekV2DecoderLayerImpl::prepare_expert_weight(
       at_npu::native::npu_format_cast(expert_buffer.gateup_weight, 29);
 }
 
-void DeepseekV2DecoderLayerImpl::merge_and_copy_gate_up_weights(
+void NpuDeepseekV2DecoderLayerImpl::merge_and_copy_gate_up_weights(
     torch::Tensor&
         target_buffer,  // [num_experts, hidden_dim, gate_dim + up_dim]
     const std::vector<torch::Tensor>& experts_gate,  // [gate_dim, hidden_dim]
@@ -653,7 +662,7 @@ void DeepseekV2DecoderLayerImpl::merge_and_copy_gate_up_weights(
   }
 }
 
-void DeepseekV2DecoderLayerImpl::merge_and_copy_down_weights(
+void NpuDeepseekV2DecoderLayerImpl::merge_and_copy_down_weights(
     torch::Tensor& target_buffer,
     const std::vector<torch::Tensor>& experts_down) {
   const int64_t num_experts = experts_down.size();
@@ -663,7 +672,7 @@ void DeepseekV2DecoderLayerImpl::merge_and_copy_down_weights(
   }
 }
 
-void DeepseekV2DecoderLayerImpl::update_expert_weight() {
+void NpuDeepseekV2DecoderLayerImpl::update_expert_weight() {
   auto& expert_buffer = ExpertBuffer::Instance();
   auto& at_weight_tensors = loader_->get_at_weight_tensors();
   const auto tensor_pairs = {
@@ -692,16 +701,18 @@ void DeepseekV2DecoderLayerImpl::update_expert_weight() {
   expert_routing_map_ = expert_routing_map_.contiguous();
 }
 
-int64_t DeepseekV2DecoderLayerImpl::init_layer() {
+int64_t NpuDeepseekV2DecoderLayerImpl::init_layer() {
   name_ = "deepseek_v2_decoder_layer " + std::to_string(layer_id_);
   model_name_ = "DeepSeek_V2";
   CHECK_OPERATION_STATUS_RETURN(init_node(prefill_node_, prefill_param_));
+  CHECK_OPERATION_STATUS_RETURN(
+      init_node(prefill_node_prefixcache_, prefill_param_prefixcache_));
   CHECK_OPERATION_STATUS_RETURN(init_node(decode_node_, decode_param_));
   CHECK_OPERATION_STATUS_RETURN(init_node(decode_mla_node_, decode_mla_param_));
   return atb::NO_ERROR;
 }
 
-int64_t DeepseekV2DecoderLayerImpl::init_node(
+int64_t NpuDeepseekV2DecoderLayerImpl::init_node(
     atb_speed::Model::Node& node,
     atb_speed::deepseekV2::DecoderLayerParam& param) {
   bool eplb_enabled = FLAGS_enable_eplb &&
@@ -748,7 +759,7 @@ int64_t DeepseekV2DecoderLayerImpl::init_node(
   return atb::NO_ERROR;
 }
 
-torch::Tensor DeepseekV2DecoderLayerImpl::forward(
+torch::Tensor NpuDeepseekV2DecoderLayerImpl::forward(
     torch::Tensor& x,
     torch::Tensor& cos_pos,
     torch::Tensor& sin_pos,
@@ -761,7 +772,20 @@ torch::Tensor DeepseekV2DecoderLayerImpl::forward(
   atb::Status st;
   ModelInputParams& input_params_new =
       const_cast<ModelInputParams&>(input_params);
-  if (input_params.global_empty_kv_cache) {
+  // all micro batches are in same prefill/decode stage,
+  if (input_params_new.batch_forward_type.is_chunked_prefill()) {
+    build_node_variant_pack(prefill_node_prefixcache_,
+                            x,
+                            cos_pos,
+                            sin_pos,
+                            attn_mask,
+                            kv_cache,
+                            input_params_new,
+                            true);
+    st = execute_node(prefill_node_prefixcache_, node_id, event, event_flag);
+    LOG_IF(FATAL, st != 0) << model_name_
+                           << "excute prefill layer fail, error code: " << st;
+  } else if (input_params_new.batch_forward_type.is_prefill()) {
     build_node_variant_pack(prefill_node_,
                             x,
                             cos_pos,
@@ -808,7 +832,7 @@ torch::Tensor DeepseekV2DecoderLayerImpl::forward(
   return tensor_placeholder_;
 }
 
-void DeepseekV2DecoderLayerImpl::build_node_variant_pack(
+void NpuDeepseekV2DecoderLayerImpl::build_node_variant_pack(
     atb_speed::Model::Node& node,
     torch::Tensor& x,
     torch::Tensor& cos_pos,
@@ -869,10 +893,17 @@ void DeepseekV2DecoderLayerImpl::build_node_variant_pack(
 
   node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 12) =
       atb_speed::Utils::AtTensor2Tensor(tensor_placeholder_);
-  node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 13) =
-      atb_speed::Utils::AtTensor2Tensor(tensor_placeholder_);
-  node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 13).hostData =
-      const_cast<int32_t*>(placeholder_vec_.data());
+  if (input_params.batch_forward_type.is_chunked_prefill()) {
+    node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 13) =
+        atb_speed::Utils::AtTensor2Tensor(input_params.kv_cache_tokens_nums);
+    node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 13).hostData =
+        const_cast<int32_t*>(input_params.kv_cache_tokens_nums_host.data());
+  } else {
+    node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 13) =
+        atb_speed::Utils::AtTensor2Tensor(tensor_placeholder_);
+    node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 13).hostData =
+        const_cast<int32_t*>(placeholder_vec_zero_.data());
+  }
   node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 14) =
       atb_speed::Utils::AtTensor2Tensor(tensor_placeholder_);
 
@@ -940,14 +971,31 @@ void DeepseekV2DecoderLayerImpl::build_node_variant_pack(
       atb_speed::Utils::AtTensor2Tensor(dp_ep_padding.dynamic_ep_idx());
   node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 29) =
       atb_speed::Utils::AtTensor2Tensor(dp_ep_padding.moe_idx());
+  int offset = 30;
   if (FLAGS_enable_eplb && layer_id_ >= decode_param_.firstKDenseReplace) {
-    node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 30) =
+    node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + offset++) =
         atb_speed::Utils::AtTensor2Tensor(expert_routing_map_);
     if (!is_prefill) {
       node.variantPack.outTensors.at(1) = atb_speed::Utils::AtTensor2Tensor(
           input_params
               .expert_load_data[layer_id_ - decode_param_.firstKDenseReplace]);
     }
+  }
+  if (input_params.batch_forward_type.is_chunked_prefill()) {
+    node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + offset) =
+        atb_speed::Utils::AtTensor2Tensor(input_params.history_compressed_kv);
+    node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + offset + 1) =
+        atb_speed::Utils::AtTensor2Tensor(input_params.history_k_rope);
+    node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + offset + 2) =
+        atb_speed::Utils::AtTensor2Tensor(input_params.ring_cur_seqlen);
+    node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + offset + 2)
+        .hostData =
+        const_cast<int32_t*>(input_params.ring_cur_seqlen_host.data());
+    node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + offset + 3) =
+        atb_speed::Utils::AtTensor2Tensor(input_params.ring_cache_seqlen);
+    node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + offset + 3)
+        .hostData =
+        const_cast<int32_t*>(input_params.ring_cache_seqlen_host.data());
   }
 
   for (size_t i = 0; i < WEIGHT_COUNT_PER_LAYER; ++i) {

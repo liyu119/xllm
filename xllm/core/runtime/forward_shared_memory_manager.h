@@ -100,13 +100,14 @@ class ForwardSharedMemoryManager : public SharedMemoryManager {
     return true;
   };
 
-  bool raw_input_write(const std::vector<RawForwardInput>& inputs);
-  void raw_input_read(std::vector<ForwardInput>& inputs);
+  bool raw_input_write(const RawForwardInput& input);
+  void raw_input_read(ForwardInput& input, const torch::Device& device);
   bool raw_output_write(const torch::Tensor& next_tokens,
                         const torch::Tensor& logprobs,
                         const torch::Tensor& top_tokens,
                         const torch::Tensor& top_logprobs,
                         const torch::Tensor& embeddings,
+                        const std::vector<torch::Tensor>& mm_embeddings,
                         const torch::Tensor& expert_load_data,
                         int32_t prepared_layer_id,
                         const torch::Tensor& src_seq_idxes,
